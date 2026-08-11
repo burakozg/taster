@@ -1,0 +1,17 @@
+# Floor high enough to guarantee output_config (structured outputs/effort)
+# and adaptive thinking as first-class messages.create params — an older
+# cached/pinned SDK would TypeError on them even though fresh builds
+# resolve to the latest anyway.
+anthropic>=0.116
+# Two paths use this SDK: gpt-* models (OpenAI's Responses API) and
+# vendor/model ids (OpenRouter's OpenAI-compatible chat completions, same
+# client pointed at a different base_url) — so OpenRouter adds no dependency.
+openai>=1.100
+# Only exercised when the admin panel selects a mistral-*/pixtral-* model.
+# Floor is 2.0, not 1.0: 2.x moved the client to the `mistralai.client`
+# subpackage and made top-level `mistralai` a namespace package, so the two
+# major versions need different import paths (see mistral_provider.py).
+mistralai>=2.0
+httpx>=0.27
+pydantic>=2.8
+PyYAML>=6.0

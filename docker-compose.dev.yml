@@ -1,0 +1,68 @@
+# Tasting Log — LOCAL Mac development/testing only. Not used for the real
+# deployment — see qnap/docker-compose.yml (worker) and relay/fly.toml
+# (relay) for that.
+#
+# Runs the full pipeline locally on a plain Docker bridge network: CouchDB,
+# the relay (PWA + job queue, normally on Fly), and the worker (normally on
+# the QNAP) all talk to each other by service name here. Open
+# http://localhost:8000 and drive a real capture/lookup end to end without
+# ever touching Fly or a NAS.
+#
+# Usage:
+#   cp backend/.env.example backend/.env   # fill in ANTHROPIC_API_KEY
+#   cp relay/.env.example relay/.env       # fill in TASTER_API_KEY, WORKER_API_KEY
+#   # WORKER_API_KEY in backend/.env must match relay/.env's value.
+#   # backend/.env's COUCHDB_USER/PASSWORD should match this file's
+#   # COUCHDB_ADMIN_USER/PASSWORD defaults (admin/adminpass) for local use.
+#   docker compose -f docker-compose.dev.yml up -d --build
+#   curl http://localhost:8000/health
+
+services:
+  couchdb:
+    image: couchdb:3
+    restart: unless-stopped
+    environment:
+      COUCHDB_USER: ${COUCHDB_ADMIN_USER:-admin}
+      COUCHDB_PASSWORD: ${COUCHDB_ADMIN_PASSWORD:-adminpass}
+    volumes:
+      - couchdb_dev_data:/opt/couchdb/data
+    # Same TCP-level healthcheck as qnap/docker-compose.yml, for the same
+    # reason: the worker's ensure_db_and_indexes() has no retry loop, so on
+    # a cold `up` it would lose the startup race and crash once (the
+    # restart policy would recover it, but a clean first boot is nicer and
+    # keeps dev behavior matching the QNAP deployment).
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c 'echo > /dev/tcp/127.0.0.1/5984' || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  relay:
+    build: ./relay
+    restart: unless-stopped
+    env_file:
+      - ./relay/.env
+    environment:
+      - RELAY_DB_PATH=/data/relay.db
+    volumes:
+      - relay_dev_data:/data
+    ports:
+      - "8000:8000"
+
+  worker:
+    build: ./backend
+    restart: unless-stopped
+    env_file:
+      - ./backend/.env
+    environment:
+      - RELAY_URL=http://relay:8000
+      - COUCHDB_URL=http://couchdb:5984
+    depends_on:
+      couchdb:
+        condition: service_healthy
+      relay:
+        condition: service_started
+
+volumes:
+  couchdb_dev_data:
+  relay_dev_data:

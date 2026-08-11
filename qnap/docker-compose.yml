@@ -1,0 +1,159 @@
+# Tasting Log — QNAP Container Station Application config.
+#
+# Just two services now: CouchDB and the worker. There's no reverse proxy,
+# no DuckDNS, no port-forwarding — the worker never accepts an inbound
+# connection at all. It polls the Fly relay (relay/fly.toml) outbound for
+# jobs and posts results back the same way, which works through any NAT/
+# firewall with zero router configuration. See ARCHITECTURE.md for the
+# full relay/worker split and why it replaced the reverse-proxy design.
+#
+# The worker image is built on your Mac (for the QNAP's actual CPU
+# architecture — see deploy.sh) and streamed straight into `docker load`
+# on the NAS over a single SSH pipe. No source code, no `build:` context,
+# no rsync, no scp — none of the last two work against this NAS's SSH
+# setup. See ../INSTALL.md.
+#
+# All state lives under /share/Container/taster/, including CouchDB's
+# actual data directory (bind-mounted, not a Docker-managed named volume)
+# — so the whole app's state sits inside one folder tree QNAP's backup
+# tools (Hybrid Backup Sync etc.) can capture directly. See
+# tasting-log-design.md §7.
+#
+# Networking (learned the hard way on nas.local): container-to-container
+# traffic over the qnet network does NOT work reliably — service names
+# don't resolve (no embedded Docker DNS on qnet), and even direct-IP
+# connections between two qnet containers failed (worker crash-looped with
+# ConnectError against couchdb's qnet IP). So the worker<->couchdb path
+# runs over `taster-internal`, a plain Docker bridge private to this app,
+# where embedded DNS and container-to-container traffic are guaranteed.
+# CouchDB keeps a static qnet IP *additionally*, because that's what
+# Obsidian LiveSync clients on the LAN connect to. The worker has no LAN
+# presence at all — it only ever dials out (Fly relay via the bridge's
+# NAT, couchdb via the bridge).
+#
+# Static IP: CouchDB's qnet address comes from TASTER_COUCHDB_LAN_IP, read
+# from /share/Container/taster/.env (the same file the worker's env_file
+# below points at — Compose auto-loads .env from the compose file's own
+# directory for ${...} substitution, no separate file needed). Falls back
+# to a placeholder if that var is unset; confirm whatever address you pick
+# is actually free first (Container Station's network view, or
+# `docker network inspect qnet-static-eth1-dc7e3a` over SSH) before
+# applying this file — if it collides with another Application on the same
+# qnet network, pick a different one.
+
+# `version:` is obsolete in Compose v2 (v2.29.1-qnap2 warns and ignores it)
+# but kept for consistency with the sibling Container Station Applications
+# on this NAS, which all carry it.
+version: "3"
+
+services:
+  taster-couchdb:
+    # Stock public image — pulled directly by Docker/Container Station over
+    # the internet, no manual transfer needed (unlike taster-worker below,
+    # a custom image built on Mac and moved over as a stream). Pinned to
+    # the same major version docker-compose.dev.yml tests against, so the
+    # environment you verify in matches the one you deploy to (and `latest`
+    # can't silently jump a major version under the vault data).
+    image: couchdb:3
+    container_name: taster-couchdb
+    restart: unless-stopped
+    # RET-1/RET-3: cap log growth on the NAS share. The default json-file
+    # driver is unbounded; CouchDB's own logging stays at its image defaults
+    # (RET-3) and is covered by this same rotation. 10m x 3 = 30m ceiling.
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    env_file:
+      # COUCHDB_USER / COUCHDB_PASSWORD here are the ADMIN bootstrap account
+      # the official image creates on first boot — a different account from
+      # the worker's own COUCHDB_USER/PASSWORD in .env (a least-privilege
+      # member account it authenticates as day-to-day; see INSTALL.md for
+      # creating it after this container's first boot).
+      - /share/Container/taster/couchdb.env
+    volumes:
+      # Bind-mounted, not a named volume — this is the actual vault data,
+      # and needs to be somewhere QNAP's folder-based backup jobs can see.
+      - /share/Container/taster/couchdb/data:/opt/couchdb/data
+    # No read_only/tmpfs hardening here, unlike the worker below — CouchDB
+    # writes internal config/state under /opt/couchdb beyond just the data
+    # dir (exact paths aren't nailed down), and getting that wrong breaks
+    # the database in a much worse way than a slightly looser container.
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      - TZ=Europe/Stockholm
+    healthcheck:
+      # CouchDB's official image is Debian-based (has bash); a bare TCP
+      # check is enough to know it's accepting connections before the
+      # worker tries to create its database on first boot. This is what
+      # makes `depends_on: condition: service_healthy` below meaningful —
+      # without it, both containers starting together for the first time
+      # is a real race (the worker's ensure_db_and_indexes() has no retry
+      # loop and will fail startup if CouchDB isn't ready yet).
+      test: ["CMD-SHELL", "bash -c 'echo > /dev/tcp/127.0.0.1/5984' || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    networks:
+      # qnet: the LAN-facing address Obsidian LiveSync clients sync against.
+      # Network name and IP are specific to this NAS's Container Station
+      # macvlan setup (find yours with `docker network ls`) — pick any free
+      # address on your LAN's subnet.
+      qnet-static-eth1-dc7e3a:
+        ipv4_address: ${TASTER_COUCHDB_LAN_IP:-10.0.0.2}
+      # bridge: where the worker reaches it (as http://taster-couchdb:5984).
+      taster-internal:
+
+  taster-worker:
+    # No `build:` — this image is created on Mac (docker buildx build
+    # --platform <NAS arch> --load) and loaded here via `docker load`, not
+    # built on the NAS. `docker load` must run before `docker-compose up`
+    # picks this tag up; Compose won't try to pull it since a local match
+    # exists.
+    image: taster-worker:nas
+    container_name: taster-worker
+    restart: unless-stopped
+    # RET-1: same rotation cap as couchdb — the worker's heartbeat + per-job
+    # lines are low-volume (GEN-6), but a crash loop could still spew, so
+    # bound it. This is where `docker logs taster-worker` reads from (RET-4).
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    user: "1000:100"
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    depends_on:
+      taster-couchdb:
+        condition: service_healthy
+    env_file:
+      # COUCHDB_URL in here should be http://taster-couchdb:5984 — the
+      # service name, resolved by Docker's embedded DNS on taster-internal.
+      # RELAY_URL/WORKER_API_KEY point this worker at the Fly relay — the
+      # only network destination it ever initiates a connection to besides
+      # CouchDB. config.yaml (model/effort/token settings) is baked into
+      # the image rather than bind-mounted — changing it means rebuilding
+      # and re-transferring the image (see ../qnap/deploy.sh), not just
+      # editing a file and restarting.
+      - /share/Container/taster/.env
+    environment:
+      - TZ=Europe/Stockholm
+    networks:
+      # Bridge only — no qnet, no LAN IP. The worker accepts nothing
+      # inbound and dials out via the bridge's NAT (Fly relay) and the
+      # bridge itself (couchdb). See the networking note in the header.
+      - taster-internal
+
+networks:
+  qnet-static-eth1-dc7e3a:
+    external: true
+  # Private to this Application — created by compose, standard bridge
+  # driver, so service-name DNS and container-to-container traffic work
+  # (unlike qnet, see header comment).
+  taster-internal:

@@ -1,0 +1,204 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1" />
+  <meta name="theme-color" content="#b5651d" />
+  <title>Tasting Log</title>
+  <link rel="manifest" href="manifest.json" />
+  <link rel="icon" href="icon.svg" type="image/svg+xml" />
+  <link rel="apple-touch-icon" href="icon.svg" />
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <div id="setup" class="screen">
+    <h1>Tasting Log</h1>
+    <p>Enter your API key once — stored on this device only. (No backend
+      URL needed — this page and the API it talks to are the same origin.)</p>
+    <input id="setup-key" type="password" placeholder="API key" autocomplete="off" />
+    <button id="setup-save">Save</button>
+  </div>
+
+  <div id="app" class="screen hidden">
+    <nav class="tabs" role="tablist" aria-label="Sections">
+      <button data-tab="add" class="tab active" role="tab" aria-selected="true" aria-controls="tab-add">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 8v8M8 12h8"/></svg>
+        <span>Add</span>
+      </button>
+      <button data-tab="search" class="tab" role="tab" aria-selected="false" aria-controls="tab-search">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg>
+        <span>Search</span>
+      </button>
+      <button data-tab="admin" class="tab" role="tab" aria-selected="false" aria-controls="tab-admin">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 21v-7M4 10V3M12 21v-9M12 8V3M20 21v-6M20 12V3"/><path d="M1 14h6M9 8h6M17 15h6"/></svg>
+        <span>Admin</span>
+      </button>
+    </nav>
+
+    <section id="tab-add" class="tab-panel active" role="tabpanel">
+      <h2>Add tasting</h2>
+      <p class="hint">Snap a label or upload an image (a screenshot of a
+        recommendation, something you saw online) — add a rating &amp; note if
+        you like — or just describe the tasting in words: "Had the Glenfarclas
+        15, 4 stars, sherry and nutty", a recommendation, or a pairing report.</p>
+      <div class="photo-actions">
+        <label class="photo-btn">
+          <span class="photo-icon" aria-hidden="true">📷</span>
+          <span class="photo-label">Camera</span>
+          <input id="add-photo-camera" type="file" accept="image/*" capture="environment" hidden />
+        </label>
+        <label class="photo-btn">
+          <span class="photo-icon" aria-hidden="true">🖼</span>
+          <span class="photo-label">Upload image</span>
+          <input id="add-photo-upload" type="file" accept="image/*" hidden />
+        </label>
+      </div>
+      <img id="add-preview" class="preview hidden" />
+      <div id="add-rating-row" class="rating-row hidden">
+        <input id="add-rating" type="range" min="1" max="5" step="0.1" value="3" />
+        <span id="add-rating-value" class="rating-value">No rating</span>
+        <button id="add-rating-clear" class="rating-clear" type="button">clear</button>
+      </div>
+      <textarea id="add-text" placeholder="Describe the tasting, or add a note for the photo..."></textarea>
+      <button id="add-submit">Capture</button>
+      <div id="add-status" class="status"></div>
+    </section>
+
+    <section id="tab-search" class="tab-panel" role="tabpanel">
+      <h2>Search</h2>
+      <p class="hint">Type to filter your items below, or ask a question —
+        snap or upload an image (a shelf, a bottle, a screenshot) for shop mode.</p>
+      <div class="photo-actions">
+        <label class="photo-btn">
+          <span class="photo-icon" aria-hidden="true">📷</span>
+          <span class="photo-label">Camera</span>
+          <input id="search-photo-camera" type="file" accept="image/*" capture="environment" hidden />
+        </label>
+        <label class="photo-btn">
+          <span class="photo-icon" aria-hidden="true">🖼</span>
+          <span class="photo-label">Upload image</span>
+          <input id="search-photo-upload" type="file" accept="image/*" hidden />
+        </label>
+      </div>
+      <div class="search-row">
+        <input id="search-text" type="text" placeholder="Filter items, or ask a question..." />
+        <button id="search-ask">Ask AI</button>
+      </div>
+      <img id="search-preview" class="preview hidden" />
+      <div id="search-answer" class="status"></div>
+      <div class="filter-row">
+        <button id="filter-instock" class="chip" type="button" aria-pressed="false">In stock</button>
+        <button id="filter-wishlist" class="chip" type="button" aria-pressed="false">Wishlist</button>
+      </div>
+      <ul id="items-groups" class="groups"></ul>
+    </section>
+
+    <section id="tab-admin" class="tab-panel" role="tabpanel">
+      <h2>Admin</h2>
+
+      <div class="admin-card">
+        <h3>Status</h3>
+        <div id="admin-status" class="status"></div>
+      </div>
+
+      <div class="admin-card">
+        <h3>Sync</h3>
+        <p class="hint">Records live in the database; Obsidian shows one file per
+          record. If they drift apart, rebuild the vault files from the records —
+          safe, since the records are the source of truth.</p>
+        <div class="sync-check-row">
+          <button id="sync-check" class="btn-secondary" type="button">Check</button>
+          <div id="sync-summary" class="sync-summary"></div>
+        </div>
+        <div id="sync-gap" class="status"></div>
+        <div class="manage-actions">
+          <button id="sync-rebuild-vault">Rebuild vault from records</button>
+        </div>
+        <p class="hint">Or pull edits made in Obsidian back into the records
+          (upsert-only — it never deletes a record).</p>
+        <div class="manage-actions">
+          <button id="sync-rebuild-records" class="btn-secondary" type="button">Rebuild records from vault</button>
+        </div>
+        <p class="hint">Fix field inconsistencies by re-checking every record
+          against the current schema (e.g. old <code>origin_country</code> →
+          <code>country_of_origin</code>). Deterministic and safe to re-run.</p>
+        <div class="manage-actions">
+          <button id="sync-normalize" class="btn-secondary" type="button">Normalize records</button>
+        </div>
+        <div id="sync-msg" class="status"></div>
+      </div>
+
+      <div class="admin-card">
+        <h3>Models</h3>
+        <p class="hint">Applies from the next capture/lookup — the worker picks
+          the choice up with each job, no restart. € = relative cost.
+          gpt-* models need OPENAI_API_KEY, mistral-*/pixtral-* need
+          MISTRAL_API_KEY, and vendor/model ones (Gemini, Grok, Kimi, Qwen) go
+          through OpenRouter and need OPENROUTER_API_KEY — in the worker's
+          .env.</p>
+        <label class="admin-label">Capture model
+          <select id="admin-capture-model"></select>
+        </label>
+        <label class="admin-label">Lookup model
+          <select id="admin-lookup-model"></select>
+        </label>
+        <div class="manage-actions">
+          <button id="admin-save">Save</button>
+        </div>
+        <div id="admin-save-status" class="status"></div>
+      </div>
+
+      <div class="admin-card">
+        <h3>Token usage</h3>
+        <p class="hint">Counted on every model call and kept on the relay, so it
+          survives a worker restart. Days are the worker's own local days — it
+          decides where a day ends, not this page.</p>
+        <div id="usage-latest"></div>
+        <ul id="usage-days" class="usage-days"></ul>
+        <p id="usage-total" class="hint"></p>
+      </div>
+
+      <div class="admin-card">
+        <h3>Maintain (AI)</h3>
+        <p class="hint">Ask the AI to change existing records in bulk — e.g.
+          "add a country of origin to every whisky", "give records without an id
+          a uid". It proposes changes; nothing is written until you approve.</p>
+        <textarea id="manage-instruction" placeholder="Describe the change to make across your records..."></textarea>
+        <div class="manage-actions">
+          <button id="manage-propose">Propose changes</button>
+          <button id="manage-repair-pairings" class="btn-secondary" type="button">Regenerate pairings</button>
+        </div>
+        <p class="hint">Regenerate rebuilds every item's pairing suggestions under the
+          current companion↔drink rule (profile + owned matches) — no re-capture needed.</p>
+        <div id="manage-status" class="status"></div>
+        <div id="manage-plan" class="hidden">
+          <div id="manage-summary" class="manage-summary"></div>
+          <ul id="manage-changes" class="admin-list"></ul>
+          <div class="manage-actions">
+            <button id="manage-apply">Apply selected</button>
+            <button id="manage-select-all" class="rating-clear" type="button">select all</button>
+            <button id="manage-discard" class="rating-clear" type="button">discard</button>
+          </div>
+          <div id="manage-apply-status" class="status"></div>
+        </div>
+      </div>
+
+      <div class="admin-card">
+        <h3>Recent jobs (last 10)</h3>
+        <div id="admin-jobs-stats" class="job-pills"></div>
+        <ul id="admin-jobs" class="admin-list"></ul>
+      </div>
+    </section>
+  </div>
+
+  <div id="item-modal" class="modal hidden" role="dialog" aria-modal="true" aria-label="Item detail">
+    <div class="modal-card">
+      <button id="item-close" class="modal-close" type="button" aria-label="Close">✕</button>
+      <div id="item-detail"></div>
+      <div id="item-msg" class="status"></div>
+    </div>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>
