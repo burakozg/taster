@@ -23,6 +23,13 @@ CONFIG_YAML_PATH = Path(os.environ.get("TASTER_CONFIG_PATH", Path(__file__).pare
 
 
 class ClaudeConfig(BaseModel):
+    """Despite the name, every provider module reads its budgets/effort/etc.
+    from this one block (`settings.models.claude`) — OpenAI, Mistral, and
+    OpenRouter included. It predates those three; renaming the YAML key and
+    every `settings.models.claude` call site is a bigger refactor than the
+    naming confusion currently costs, but see model_output.truncated() for a
+    user-facing message that used to read as Claude-specific when it wasn't."""
+
     capture_model: str = "claude-opus-4-8"
     lookup_model: str = "claude-opus-4-8"
     max_tokens_capture: int = 4096

@@ -1681,6 +1681,24 @@ function initItemModal() {
   });
 }
 
+// Home-screen iOS PWAs (display: standalone) have a long-standing WebKit bug
+// where rotating landscape -> portrait leaves the layout viewport stuck at
+// the landscape width — body's max-width:520px etc. get computed against the
+// stale wider viewport, so content overflows past the right edge with no way
+// to scroll it into view. Safari tabs recover on their own; standalone mode
+// doesn't. Forcing a reflow after the rotation settles (WebKit fires
+// orientationchange before the resize is actually applied, hence the
+// setTimeout) makes it recompute against the real portrait width.
+function fixStandaloneRotationViewport() {
+  window.addEventListener("orientationchange", () => {
+    setTimeout(() => {
+      document.documentElement.style.display = "none";
+      void document.documentElement.offsetHeight; // force layout flush
+      document.documentElement.style.display = "";
+    }, 50);
+  });
+}
+
 // Service worker: install-ability only (no caching) — see sw.js.
 if ("serviceWorker" in navigator) {
   navigator.serviceWorker.register("/sw.js").catch(() => {
@@ -1688,6 +1706,7 @@ if ("serviceWorker" in navigator) {
   });
 }
 
+fixStandaloneRotationViewport();
 initSetup();
 initTabs();
 initCategories();  // async: swap the fallback groups/forms for the worker's registry

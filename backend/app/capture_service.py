@@ -144,6 +144,23 @@ size, dose, grinder, or machine, and never assume a default rig. Leave them out 
 when unstated. `grind_size` is free text (e.g. "medium-fine", "metal filter") — \
 put a stated grind description there.
 
+Every item note (everything except a pairing) MUST include `name` and \
+`status` — never omit them even when the text is terse (e.g. "Glenfiddich \
+15, balanced, 3.8 stars" still has a `name` and a `status` of "tasted"). \
+`status` is "tasted" if any tasting/rating is described, "to-try" only for \
+a bare recommendation with no rating.
+
+The schema below lists every field across every category, but almost none of \
+them apply to any single item — only include a key when you genuinely know \
+or can determine its value for THIS item, and OMIT everything else entirely. \
+NEVER fill an unknown or inapplicable field with a placeholder like "", 0, or \
+false just to satisfy the shape — an omitted key and a hollow placeholder are \
+not the same thing to the person reading this later. `common_notes` most of \
+all is not decorative: if web_search turned up anything about this product's \
+tasting profile, you MUST synthesize it into `common_notes` as real sentences \
+— leaving it empty after a search that found relevant results is a failure, \
+not a valid answer.
+
 Respond only with the structured JSON. `source` must be "photo" or "chat" \
 matching how this capture arrived. If `date` isn't mentioned, use today.
 """

@@ -42,9 +42,15 @@ def truncated(provider: str, budget_key: str) -> ModelOutputError:
     thinking tokens are drawn from the same ceiling on the providers that have
     them, so the budget can be exhausted before any visible text is produced.
     """
+    # config.yaml's model-config block is still named `claude:` even though
+    # every provider (OpenAI/Mistral/OpenRouter included) reads its budgets
+    # from it — see config.ClaudeConfig's docstring. Naming it plainly here,
+    # with the `[provider]` tag already on the message, avoids reading like
+    # this OpenRouter/Mistral/OpenAI failure was somehow routed through Claude.
     return ModelOutputError(
         f"model output was truncated (hit the output token limit) — raise "
-        f"models.claude.{budget_key} in config.yaml, or lower effort [{provider}]"
+        f"{budget_key} under config.yaml's `claude:` block (shared setting "
+        f"for every provider, not Claude-specific), or lower effort [{provider}]"
     )
 
 

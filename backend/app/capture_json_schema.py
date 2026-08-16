@@ -1,4 +1,4 @@
-"""The capture output schema, shared by all three provider paths.
+"""The capture output schema, shared by all four provider paths.
 
 Kept as one flat, permissive object (not a strict anyOf-per-type union) —
 structured-output JSON schema support excludes numeric/string length
@@ -17,6 +17,11 @@ How each path consumes it:
 - **OpenAI** — as text.format json_schema with `strict: False`, which skips
   grammar compilation and so has no optional-parameter ceiling.
 - **Mistral** — as response_format json_schema, also `strict: False`.
+- **OpenRouter** (Qwen, Gemini, Grok, Moonshot, …) — same response_format
+  json_schema shape as Mistral, also `strict: False`. Every model behind the
+  router shares this one nudge, so a weak model on this path is exactly as
+  prone to dropping non-required fields as Mistral was — see the `required`
+  list below.
 
 So the optional-property count is load-bearing on the Claude path only: keep
 new fields optional freely, but don't assume a grammar is enforcing any of it.
@@ -144,6 +149,15 @@ CAPTURE_OUTPUT_SCHEMA = {
     },
     # country_of_origin required so item captures always determine it (the
     # Pydantic default "unknown" is only a floor; pairings ignore the field).
-    "required": ["type", "source", "country_of_origin"],
+    # name/status/date are true Pydantic-required fields on every item note
+    # (schema.BaseNote) — without them here, a permissive `strict: False`
+    # model (observed on Mistral) can drop them from its output entirely and
+    # fail Pydantic validation on a clean, well-described capture. Listing
+    # them here doesn't cost anything on the Claude path (this schema is only
+    # ever pasted into the prompt as text there, never wired as an actual
+    # output_config.format grammar — see the module docstring), and pairing
+    # notes (which have neither field) just get name/status keys Pydantic
+    # silently ignores as extras.
+    "required": ["type", "source", "country_of_origin", "name", "status", "date"],
     "additionalProperties": False,
 }
