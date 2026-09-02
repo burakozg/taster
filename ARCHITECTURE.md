@@ -160,7 +160,7 @@ reconciler on a `RECONCILE_INTERVAL_S` (default 30s) timer between jobs.
 | `app/record_service.py` | Single-record `update_record`/`delete_record` for the PWA's item detail view (the sanctioned in-place exceptions to append-only capture) |
 | `app/reconcile.py` | Reverse-sync — folds a human's Obsidian edit back into the JSON doc, matched by `uid` (see the CouchDB section) |
 | `app/markdown.py` / `app/markdown_parse.py` | Render a validated note to markdown+frontmatter, and its inverse (used by reverse-sync) |
-| `app/tools.py` | `query_notes` — the one read-only tool shared by capture, lookup, and maintenance |
+| `app/tools.py` | `query_notes` — the one read-only tool shared by capture, lookup, and maintenance. Filters by type, name/producer substring, region, rating, status, tags, or `pair_group` (`companion`/`drink`) — the last of these answers "what could this pair with?" in a single call, since a pairing side spans three or four `type` values |
 | `app/items_query.py` | Pulls the full items list from CouchDB for the snapshot push — filtering by type/status/rating/tag happens relay-side against this snapshot |
 | `app/couchdb_client.py` | HTTP client + Mango query wrapper — see the CouchDB section for what this does and doesn't guarantee (incl. reverse-sync helpers, `uid` index) |
 | `app/openai_provider.py` | Responses-API mirror of the capture/lookup/manage shape, used when an admin `gpt-*` model is selected |
@@ -225,9 +225,11 @@ on each note at capture and carried in the frontmatter, so an edit that
 record. Reverse-sync only ever writes the JSON doc — never the LiveSync
 chunk/entry — so the two directions can't fight over the same document, and
 it is idempotent (an unchanged file is a no-op, so the worker's own writes
-don't feed back). Since LiveSync's own documents share the `tastings` db,
-every worker query constrains `type` to the registry's note types (`categories.
-NOTE_TYPES`) so chunks and file entries never leak into results.
+don't feed back). Since LiveSync's own documents share the `hobby` db (also
+`family_calendar`'s recipes/events, since 2026-09-02 — see
+`homelab/README.md` "The vault split"), every worker query constrains `type`
+to the registry's note types (`categories.NOTE_TYPES`) so chunks and file
+entries never leak into results.
 
 ### Obsidian (client-side)
 
@@ -372,7 +374,7 @@ Shared base (`schema.py` `BaseNote`, on every **item** note):
 
 | Type | Fields beyond the shared base |
 |---|---|
-| `whisky` | `category`, `region`, `peated`, `cask`, `age_years` |
+| `whisky` | `category`, `region`, `peated`, `cask`, `age_years`, `abv` (shared key with `beer`/`raki` — strength is on every whisky label) |
 | `cigar` | `wrapper`, `vitola`, `strength` |
 | `coffee` | `brew_method` (see below), `roaster`, `origin`, `process`, `roast_level`, plus espresso dial-in: `grind_size` (free text, e.g. "medium-fine" or "metal filter"), `dose_g`, `brew_time_s`, `grinder`, `machine` — all captured only when stated, default empty (no assumed rig) and editable in the PWA |
 | `pipe` | `blend_type`, `cut`, `components` (list of leaf, e.g. Virginia/Latakia/Perique), `strength`, `room_note`, `tin_date` |
@@ -470,7 +472,7 @@ Split across the two deployables, by who needs what:
   cap. Not a secret; meant to be hand-edited to tune behavior or swap models
   without touching application code. On the QNAP deployment specifically,
   it's baked into the worker image (see Deployment below) rather than
-  bind-mounted, so a change still requires `./qnap/deploy.sh` to take
+  bind-mounted, so a change still requires `./deploy` to take
   effect — not a code change, but not a live edit-in-place either.
 - **`backend/.env`** (from `.env.example`, never committed) — Anthropic API
   key, CouchDB credentials/URL, `RELAY_URL`, `WORKER_API_KEY`, poll/snapshot
@@ -532,11 +534,11 @@ Four separate compose/config files, each with a distinct job:
 | `docker-compose.dev.yml` | Your Mac | Local verify loop — CouchDB + relay + worker together on a plain bridge network, so a full capture/lookup can be driven end to end via `http://localhost:8000` without touching Fly or a NAS. Not used in production. |
 | `relay/fly.toml` | Fly.io | The relay — PWA + job queue, the one piece actually exposed to the public internet. |
 | `qnap/docker-compose.yml` | The QNAP, via Container Station | CouchDB (stock image, pulled normally) + the worker, both under `/share/Container/taster/`. **No `build:` for the worker** — that image is cross-built on Mac for the NAS's actual CPU architecture and loaded via `docker load`, not built on the NAS. |
-| `qnap/deploy.sh` | Your Mac → the NAS | Builds the worker image for the NAS's architecture and streams it over (see below). |
+| `deploy` | Your Mac → the NAS | Builds the worker image for the NAS's architecture and streams it over (see below). |
 
 **The worker image never carries source code onto the NAS, and nothing
 uses rsync or scp — neither works against this NAS's SSH server.**
-`qnap/deploy.sh` cross-builds it with `docker buildx build --platform <NAS
+`./deploy` cross-builds it with `docker buildx build --platform <NAS
 arch> --load`, then streams it directly into `docker load` on the NAS over
 one SSH pipe: `docker save "$tag" | gzip | ssh -p "$NAS_SSH_PORT"
 "$NAS_HOST" "gunzip -c | '$NAS_DOCKER_BIN' load"` — no intermediate tar
@@ -588,7 +590,7 @@ See `INSTALL.md` for the full walkthrough.
   name: `https://<app>.fly.dev`).
 
 Confirmed (not placeholders, but environment-specific facts baked into
-`qnap/deploy.sh`'s defaults): `NAS_PLATFORM=linux/amd64` (`uname -m` →
+`./deploy`'s defaults, in .deploy.env): `NAS_PLATFORM=linux/amd64` (`uname -m` →
 `x86_64` on `nas.local`); `docker` lives at
 `/share/CACHEDEV1_DATA/.qpkg/container-station/bin/docker` and is only on
 `PATH` for interactive logins, not `ssh host "command"` — hence every

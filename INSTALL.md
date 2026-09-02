@@ -39,7 +39,7 @@ x86_64
 you're in there — Container Station only wires `docker` (and here, `docker
 compose` as a v2 plugin subcommand rather than a standalone
 `docker-compose` binary) onto `PATH` for *interactive* logins, not for the
-one-off `ssh host "command"` invocations `deploy.sh` and this guide use
+one-off `ssh host "command"` invocations `./deploy` and this guide use
 everywhere below:
 
 ```bash
@@ -49,17 +49,32 @@ everywhere below:
 Docker Compose version v2.29.1-qnap2
 ```
 
-Export everything this depends on, in this shell — not just as
-`deploy.sh` defaults; every manual command below references these and
-needs them set here too, or you'll hit `sh: : command not found` (an
-empty command — the variable silently expanding to nothing):
+Write these into a git-ignored `.deploy.env` at the repo root — copy
+`deploy.env.example` and fill it in. `./deploy` auto-sources it, so they
+never need re-exporting each session:
 
 ```bash
-export NAS_HOST=admin@nas.local
-export NAS_PLATFORM=linux/amd64
-export NAS_SSH_PORT=44   # only if your SSH server isn't on the default port 22
-export NAS_DOCKER_BIN=/share/CACHEDEV1_DATA/.qpkg/container-station/bin/docker
+cp deploy.env.example .deploy.env && $EDITOR .deploy.env
 ```
+
+```ini
+NAS_SSH=admin@nas.local
+NAS_PLATFORM=linux/amd64
+NAS_SSH_PORT=44   # only if your SSH server isn't on the default port 22
+NAS_DOCKER_BIN=/share/CACHEDEV1_DATA/.qpkg/container-station/bin/docker
+```
+
+The manual `ssh` commands below reference the same names, so source it in
+this shell too, or you'll hit `sh: : command not found` (an empty command —
+the variable silently expanding to nothing):
+
+```bash
+set -a; . ./.deploy.env; set +a
+```
+
+> `NAS_SSH`, not `NAS_HOST`. The name was ambiguous across the four homelab
+> projects — ssh destination in some, a container's macvlan IP in others —
+> and `./deploy` now rejects `NAS_HOST` outright rather than guess.
 
 ## 1. Verify the whole pipeline on your Mac first
 
@@ -157,19 +172,20 @@ the whole app's state sits in one folder tree QNAP's backup tools can
 capture:
 
 ```bash
-ssh -p "$NAS_SSH_PORT" "$NAS_HOST" mkdir -p /share/Container/taster/couchdb/data
-./qnap/deploy.sh
+ssh -p "$NAS_SSH_PORT" "$NAS_SSH" mkdir -p /share/Container/taster/couchdb/data
+./deploy ship
 ```
 
-This cross-builds the worker for `$NAS_PLATFORM` and streams it straight
-into `docker load` on the NAS over a single SSH pipe — no source code, no
-intermediate file on either end. It'll fail at the final `docker compose up
--d` step since the compose file and secrets aren't on the NAS yet — that's
-expected; continue to the next two steps, then rerun `./qnap/deploy.sh`.
+This cross-builds the worker for `$NAS_PLATFORM`, streams it straight into
+`docker load` on the NAS over a single SSH pipe — no source code, no
+intermediate file on either end — and pushes `qnap/docker-compose.yml` to
+`/share/Container/taster/docker-compose.yml`. `ship` deliberately stops
+there and doesn't start anything, which is what you want before the secrets
+exist. Fill those in over the next two steps, then `./deploy` (no verb) to
+ship and bring the stack up.
 
-```bash
-ssh -p "$NAS_SSH_PORT" "$NAS_HOST" "cat > /share/Container/taster/docker-compose.yml" < qnap/docker-compose.yml
-```
+The compose file no longer needs pushing by hand — every `ship` overwrites
+it, so what runs on the NAS is always what's in this repo.
 
 ## 4. Fill in the NAS-side secrets
 
@@ -179,10 +195,10 @@ before running — don't paste placeholder text literally):
 **`/share/Container/taster/.env`** (the worker's):
 
 ```bash
-ssh -p "$NAS_SSH_PORT" "$NAS_HOST" "cat > /share/Container/taster/.env" <<'EOF'
+ssh -p "$NAS_SSH_PORT" "$NAS_SSH" "cat > /share/Container/taster/.env" <<'EOF'
 ANTHROPIC_API_KEY=sk-ant-your-real-key
 COUCHDB_URL=http://taster-couchdb:5984
-COUCHDB_DB=tastings
+COUCHDB_DB=hobby
 COUCHDB_USER=admin
 COUCHDB_PASSWORD=pick-a-password
 RELAY_URL=https://your-app-name.fly.dev
@@ -209,7 +225,7 @@ before deploying; the value above is only a placeholder.
 account):
 
 ```bash
-ssh -p "$NAS_SSH_PORT" "$NAS_HOST" "cat > /share/Container/taster/couchdb.env" <<'EOF'
+ssh -p "$NAS_SSH_PORT" "$NAS_SSH" "cat > /share/Container/taster/couchdb.env" <<'EOF'
 COUCHDB_USER=admin
 COUCHDB_PASSWORD=pick-a-password
 EOF
@@ -220,7 +236,7 @@ EOF
 ## 5. Bring the Application up
 
 ```bash
-./qnap/deploy.sh   # rerun now that steps 3-4 are in place
+./deploy   # rerun now that steps 3-4 are in place
 ```
 
 Check the LAN address you set as `TASTER_COUCHDB_LAN_IP` in step 4 (the
@@ -228,8 +244,8 @@ only LAN address this app claims; the worker lives on a private bridge
 instead, see the compose file's networking note) isn't already used by
 another Application on `qnet-static-eth1-dc7e3a` first — via Container
 Station's network view, or
-`ssh -p "$NAS_SSH_PORT" "$NAS_HOST" "'$NAS_DOCKER_BIN' network inspect qnet-static-eth1-dc7e3a"`.
-Adjust `.env` and rerun `./qnap/deploy.sh` if it collides with anything —
+`ssh -p "$NAS_SSH_PORT" "$NAS_SSH" "'$NAS_DOCKER_BIN' network inspect qnet-static-eth1-dc7e3a"`.
+Adjust `.env` and rerun `./deploy` if it collides with anything —
 no need to re-copy the compose file itself, since the address lives in
 `.env`, not in `qnap/docker-compose.yml`.
 
@@ -240,7 +256,7 @@ worker tries to create its database before CouchDB is actually accepting
 connections.
 
 ```bash
-ssh -p "$NAS_SSH_PORT" "$NAS_HOST" "'$NAS_DOCKER_BIN' logs taster-worker"
+ssh -p "$NAS_SSH_PORT" "$NAS_SSH" "'$NAS_DOCKER_BIN' logs taster-worker"
 ```
 
 You should see it log that it's polling the relay. No port to curl here —
@@ -250,12 +266,12 @@ the worker doesn't listen on anything.
 
 So far the worker has been authenticating as the admin bootstrap account
 from `couchdb.env` — that was necessary for its first boot (creating the
-`tastings` database and its Mango indexes requires admin rights). Now
+`hobby` database and its Mango indexes requires admin rights). Now
 replace it with a dedicated **member** account that can read/write the
-`tastings` database and nothing else. This is the account
+`hobby` database and nothing else. This is the account
 `ARCHITECTURE.md`'s security summary refers to.
 
-**Run this after step 5** — the `tastings` database must already exist
+**Run this after step 5** — the `hobby` database must already exist
 (the worker created it on its first, admin-authenticated boot).
 
 These requests run **inside the CouchDB container against loopback**
@@ -287,7 +303,7 @@ this, the user-creation request below fails with
 `{"error":"not_found","reason":"Database does not exist."}`):
 
 ```bash
-ssh -p "$NAS_SSH_PORT" "$NAS_HOST" \
+ssh -p "$NAS_SSH_PORT" "$NAS_SSH" \
   "'$NAS_DOCKER_BIN' exec taster-couchdb curl -s -X PUT http://127.0.0.1:5984/_users \
    -u admin:$CDB_ADMIN_PW"
 ```
@@ -295,7 +311,7 @@ ssh -p "$NAS_SSH_PORT" "$NAS_HOST" \
 Create the user:
 
 ```bash
-ssh -p "$NAS_SSH_PORT" "$NAS_HOST" \
+ssh -p "$NAS_SSH_PORT" "$NAS_SSH" \
   "'$NAS_DOCKER_BIN' exec taster-couchdb curl -s \
    -X PUT http://127.0.0.1:5984/_users/org.couchdb.user:taster_backend \
    -u admin:$CDB_ADMIN_PW \
@@ -303,14 +319,14 @@ ssh -p "$NAS_SSH_PORT" "$NAS_HOST" \
    -d '{\"name\":\"taster_backend\",\"password\":\"$MEMBER_PW\",\"roles\":[],\"type\":\"user\"}'"
 ```
 
-Grant it member access to `tastings` (and, as a side effect, lock the
+Grant it member access to `hobby` (and, as a side effect, lock the
 database down — once `_security.members` is non-empty, unauthenticated
 reads are rejected):
 
 ```bash
-ssh -p "$NAS_SSH_PORT" "$NAS_HOST" \
+ssh -p "$NAS_SSH_PORT" "$NAS_SSH" \
   "'$NAS_DOCKER_BIN' exec taster-couchdb curl -s \
-   -X PUT http://127.0.0.1:5984/tastings/_security \
+   -X PUT http://127.0.0.1:5984/hobby/_security \
    -u admin:$CDB_ADMIN_PW \
    -H 'Content-Type: application/json' \
    -d '{\"admins\":{\"names\":[],\"roles\":[]},\"members\":{\"names\":[\"taster_backend\"],\"roles\":[]}}'"
@@ -322,7 +338,7 @@ Then update `COUCHDB_USER`/`COUCHDB_PASSWORD` in
 worker so it picks the change up:
 
 ```bash
-ssh -p "$NAS_SSH_PORT" "$NAS_HOST" "cd /share/Container/taster && '$NAS_DOCKER_BIN' compose up -d --force-recreate taster-worker"
+ssh -p "$NAS_SSH_PORT" "$NAS_SSH" "cd /share/Container/taster && '$NAS_DOCKER_BIN' compose up -d --force-recreate taster-worker"
 ```
 
 The worker's startup check tolerates the downgrade: it only attempts the
@@ -345,7 +361,7 @@ actual storage format.
 1. Point the Self-hosted LiveSync plugin at your CouchDB instance
    (its address on the NAS's LAN, port `5984`).
 2. Trigger one chat capture (step 8 below) or write a note by hand into
-   the `tastings` database.
+   the `hobby` database.
 3. Check whether it appears as a file in your vault.
 
 If it doesn't show up as expected, the fix is isolated to `write_note()` in
@@ -372,7 +388,7 @@ Then:
 If capture reports `"failed"`, check the worker's logs:
 
 ```bash
-ssh -p "$NAS_SSH_PORT" "$NAS_HOST" "'$NAS_DOCKER_BIN' logs taster-worker"
+ssh -p "$NAS_SSH_PORT" "$NAS_SSH" "'$NAS_DOCKER_BIN' logs taster-worker"
 ```
 
 A missing `ANTHROPIC_API_KEY`, a wrong CouchDB credential, a wrong
@@ -381,22 +397,32 @@ exactly), or a Claude refusal are the most likely causes at this stage.
 
 ## Iterating after this
 
-Changed worker code (`backend/`)? `./qnap/deploy.sh` rebuilds, re-streams,
+Changed worker code (`backend/`)? `./deploy` rebuilds, re-streams,
 and restarts — nothing else to do. Changed `config.yaml` (model/effort
 settings)? That file is baked into the worker image now, not bind-mounted,
-so it also needs a `./qnap/deploy.sh` to take effect — see the comment in
+so it also needs a `./deploy` to take effect — see the comment in
 `qnap/docker-compose.yml` if you'd rather trade that for a bind-mounted
 `config.yaml` you can edit in place without a rebuild.
 
-Changed relay code (`relay/`)? `cd relay && fly deploy`.
+Changed relay code (`relay/`)? `./deploy relay`.
 
 ## Backups
 
 `/share/Container/taster/couchdb/data` holds the actual vault data (per
 tasting-log-design.md §7: LiveSync copies on your devices are sync
 artifacts, not backups — this bind-mounted directory is the one that
-matters). Add it to whatever QNAP backup job (Hybrid Backup Sync or
-similar) already covers your other Container Station app data.
+matters). This used to say "add it to whatever QNAP backup job already
+covers your other Container Station app data" — advice nobody had actually
+verified was being followed. As of 2026-08-30 it has a real, tested one
+instead: `homelab/backup-vault.sh`, run nightly from the Mac (LAN-reachable
+CouchDB, so the dump lands off the NAS from the start — see
+`homelab/README.md`'s "Backing up the vault" for the full story). Since
+2026-09-02 that means the `hobby` database specifically (`VAULT_DB=hobby`,
+its own scheduled LaunchAgent) — taster's data moved out of the shared
+`tastings` database that run, see "The vault split" in `homelab/README.md`.
+This QNAP
+bind-mount path is still worth covering by a NAS-side backup job too if one
+already exists for other reasons, but it is no longer the only copy.
 
 The relay's SQLite job queue (on its Fly volume) is **not** meant to be
 backed up — it only ever holds in-flight or recently-completed job state,
