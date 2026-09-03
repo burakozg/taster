@@ -143,11 +143,17 @@ the acceptance criteria for the requirements below:
 - **WRK-2 (Claude call telemetry)** Every Claude API call MUST log one
   INFO summary line: `job_id`, call site (capture/lookup), model,
   `stop_reason`, input tokens, output tokens, number of loop iterations,
-  number of `query_notes` executions, whether web search was attached, and
-  duration. Token counts come from `response.usage` and MUST be summable
-  per line (goal 2 — this is the cost ledger; there is no other record of
-  spend). `pause_turn` resumes and `refusal` stop reasons MUST each log
-  their own WARNING line.
+  number of `query_notes` executions, whether web search was attached
+  (`web_search`), how many searches the model actually ran (`web_searches`,
+  `?` on provider paths that can't count them), and duration. The two
+  web-search fields are deliberately separate: "attached" alone cannot
+  distinguish search being off from the model simply declining to search,
+  which is the first question asked whenever an enriched field like
+  `common_notes` comes back empty. Token counts come from `response.usage`
+  and MUST be summable per line (goal 2 — this is the cost ledger; there is
+  no other record of spend). `pause_turn` resumes and `refusal` stop reasons
+  MUST each log their own WARNING line, as MUST a server-side web search that
+  returns an error block (those arrive HTTP 200 and raise nothing).
 - **WRK-3 (Claude call failures)** API errors MUST log the HTTP status,
   the Anthropic error type, and the `request-id` from the response
   (Anthropic support needs it; the SDK exposes it as `_request_id`) — at

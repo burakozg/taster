@@ -23,6 +23,7 @@ List prices checked 2026-07-28 ($/MTok in/out -> blended):
     Mistral Medium 3.5    1.5  /  7.5  -> 2.70   €€
     Gemini 3.6 Flash      1.5  /  7.5  -> 2.70   €€
     Kimi K2.6             0.589/  2.48 -> 0.97   €
+    DeepSeek V4 Pro       0.397/  0.794-> 0.48   €
     Mistral Large 3       0.5  /  1.5  -> 0.70   €
     GPT-5 mini            0.25 /  2    -> 0.60   €
     Qwen3 VL 235B         0.21 /  1.9  -> 0.55   €
@@ -113,6 +114,7 @@ MODEL_CATALOG: list[dict] = [
     {"id": "mistral-medium-latest", "label": "Mistral Medium 3.5", "provider": "mistral", "cost": "€€"},
     {"id": "google/gemini-3.6-flash", "label": "Gemini 3.6 Flash", "provider": "openrouter", "cost": "€€"},
     {"id": "moonshotai/kimi-k2.6", "label": "Kimi K2.6", "provider": "openrouter", "cost": "€"},
+    {"id": "deepseek/deepseek-v4-pro", "label": "DeepSeek V4 Pro", "provider": "openrouter", "cost": "€"},
     {"id": "mistral-large-latest", "label": "Mistral Large 3", "provider": "mistral", "cost": "€"},
     {"id": "gpt-5-mini", "label": "GPT-5 mini", "provider": "openai", "cost": "€"},
     {"id": "qwen/qwen3-vl-235b-a22b-instruct", "label": "Qwen3 VL 235B", "provider": "openrouter", "cost": "€"},
@@ -121,6 +123,30 @@ MODEL_CATALOG: list[dict] = [
 ]
 
 MODEL_IDS = {m["id"] for m in MODEL_CATALOG}
+
+# Settings whose value is a model id. `capture_model`/`lookup_model` are the
+# retired pair — both meant "the model for a job with a photo", so they were
+# folded into `image_model`. They stay listed so a value stored under the old
+# name is still pruned when the model behind it is retired, and so migrate()
+# below has one place to read them from.
+_MODEL_SETTINGS = ("image_model", "text_model", "capture_model", "lookup_model")
+
+
+def migrate_model_settings(settings: dict) -> dict:
+    """Fold a stored capture_model/lookup_model pair into image_model.
+
+    Settings outlive a rename: the choice lives in the relay's database, not in
+    the code, so a deploy that renames the key would silently drop the user's
+    saved model back to the worker's config.yaml default. capture_model wins
+    over lookup_model when both are set and differ — captures are the job that
+    actually depends on image quality.
+    """
+    out = {k: v for k, v in settings.items() if k not in ("capture_model", "lookup_model")}
+    if not out.get("image_model"):
+        legacy = settings.get("capture_model") or settings.get("lookup_model")
+        if legacy:
+            out["image_model"] = legacy
+    return out
 
 
 def prune_unknown_models(settings: dict) -> dict:
@@ -135,5 +161,5 @@ def prune_unknown_models(settings: dict) -> dict:
     """
     return {
         k: v for k, v in settings.items()
-        if k not in ("capture_model", "lookup_model") or v in MODEL_IDS
+        if k not in _MODEL_SETTINGS or v in MODEL_IDS
     }

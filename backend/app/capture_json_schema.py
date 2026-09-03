@@ -103,6 +103,7 @@ CAPTURE_OUTPUT_SCHEMA = {
         "peated": {"type": "boolean"},
         "cask": {"type": "string"},
         "age_years": {"type": "integer"},
+        # whisky strength is the shared `abv` defined below (beer/rakı/whisky)
         # cigar
         "wrapper": {"type": "string"},
         "vitola": {"type": "string"},
@@ -128,7 +129,9 @@ CAPTURE_OUTPUT_SCHEMA = {
         # 'strength' (nicotine) is shared with cigars, defined above
         # beer
         "style": {"type": "string", "description": "e.g. IPA, stout, pilsner, saison, lager"},
-        "abv": {"type": "number", "description": "alcohol by volume, percent"},
+        # Shared by beer, rakı AND whisky — every one of them prints strength on
+        # the label, so this is a gap-fill target for all three, not a beer field.
+        "abv": {"type": "number", "description": "alcohol by volume, percent — applies to beer, rakı and whisky (e.g. 40, 43, 46, 58.2 for a cask-strength whisky). Read it off the label when visible; otherwise web_search the expression."},
         "ibu": {"type": "integer", "description": "bitterness, International Bitterness Units"},
         "serving": {"type": "string", "description": "bottle | can | draft | cask"},
         # raki (abv + serving are shared with beer, above/below)

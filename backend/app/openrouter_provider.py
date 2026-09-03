@@ -47,7 +47,7 @@ from typing import Any
 from app import usage
 from app.config import Settings
 from app.couchdb_client import CouchDBClient
-from app.model_output import loads_model_json, no_text_output, truncated
+from app.model_output import ModelOutputError, loads_model_json, no_text_output, truncated
 from app.tools import QUERY_NOTES_TOOL, query_notes_impl
 
 logger = logging.getLogger(__name__)
@@ -105,6 +105,26 @@ def _query_notes_function_tool() -> dict[str, Any]:
     }
 
 
+def _count_citations(message: Any) -> int:
+    """How many web results the `web` plugin actually injected into this turn.
+
+    OpenRouter's plugin is not a tool the model chooses to call — it searches
+    and injects results into the prompt, then reports what it used as
+    `message.annotations` entries of type "url_citation". So this is the ONLY
+    signal that distinguishes "search ran and the model ignored the results"
+    from "search never happened", and without it the log line below reported
+    `web_search=True` on every call purely because the flag was set — true by
+    construction, and worthless for diagnosing an empty `common_notes`.
+    """
+    annotations = getattr(message, "annotations", None) or []
+    count = 0
+    for a in annotations:
+        kind = getattr(a, "type", None) or (a.get("type") if isinstance(a, dict) else None)
+        if kind == "url_citation":
+            count += 1
+    return count
+
+
 def _user_content(text: str, image_b64: str | None, image_media_type: str | None) -> list[dict[str, Any]]:
     content: list[dict[str, Any]] = []
     if image_b64:
@@ -157,15 +177,15 @@ async def _run_tool_loop(
             "json_schema": {"name": "tasting_note", "schema": output_schema, "strict": False},
         }
 
-    iterations = query_notes_calls = input_tokens = output_tokens = 0
+    iterations = query_notes_calls = input_tokens = output_tokens = citations = 0
     started = time.monotonic()
 
     def log_summary() -> None:
         logger.info(
             "openrouter call job_id=%s site=%s model=%s input_tokens=%d output_tokens=%d "
-            "iterations=%d query_notes=%d web_search=%s duration_s=%.2f",
+            "iterations=%d query_notes=%d web_search=%s web_citations=%d duration_s=%.2f",
             job_id, site, model, input_tokens, output_tokens, iterations,
-            query_notes_calls, use_web_search, time.monotonic() - started,
+            query_notes_calls, use_web_search, citations, time.monotonic() - started,
         )
 
     for _ in range(max_iterations):
@@ -196,6 +216,7 @@ async def _run_tool_loop(
 
         choice = response.choices[0]
         message = choice.message
+        citations += _count_citations(message)
         tool_calls = getattr(message, "tool_calls", None) or []
 
         # Reasoning tokens come out of the same max_tokens ceiling, so an
@@ -212,7 +233,28 @@ async def _run_tool_loop(
 
         if not tool_calls:
             log_summary()
-            return message.content or ""
+            content = (message.content or "").strip()
+            if not content:
+                # Reasoning models on this router split their turn: chain of
+                # thought into `reasoning`, answer into `content`. When the
+                # answer never lands in `content`, falling through with "" gave
+                # a JSON parse error about column 1 of an empty string — which
+                # looks like the model said nothing, while its actual output sat
+                # unread in the other field. Prefer content; fall back rather
+                # than discard.
+                reasoning = (getattr(message, "reasoning", None) or "").strip()
+                if reasoning:
+                    logger.warning(
+                        "openrouter %s job_id=%s: empty content, falling back to "
+                        "reasoning field (%d chars)", site, job_id, len(reasoning),
+                    )
+                    return reasoning
+                logger.warning(
+                    "openrouter %s job_id=%s: model returned neither content nor "
+                    "reasoning (finish_reason=%s)",
+                    site, job_id, getattr(choice, "finish_reason", None),
+                )
+            return content
 
         messages.append({
             "role": "assistant",
@@ -224,6 +266,19 @@ async def _run_tool_loop(
             ],
         })
         for tc in tool_calls:
+            name = tc.function.name
+            if name != QUERY_NOTES_TOOL["name"]:
+                # query_notes is the only tool declared; anything else is the
+                # model inventing one. Answer it as an error rather than
+                # silently handing back vault rows it never asked for.
+                logger.warning(
+                    "openrouter %s job_id=%s: unknown tool %r requested", site, job_id, name,
+                )
+                messages.append({
+                    "role": "tool", "tool_call_id": tc.id, "name": name,
+                    "content": json.dumps({"error": f"no such tool: {name}"}),
+                })
+                continue
             query_notes_calls += 1
             args = tc.function.arguments
             if isinstance(args, str):
@@ -231,11 +286,19 @@ async def _run_tool_loop(
             result = await query_notes_impl(db, args or {})
             messages.append({
                 "role": "tool", "tool_call_id": tc.id,
-                "name": tc.function.name, "content": json.dumps(result),
+                "name": name, "content": json.dumps(result),
             })
 
     log_summary()
-    raise RuntimeError("exceeded max tool-use iterations without a final answer (openrouter)")
+    # ModelOutputError, not a bare RuntimeError: this is "the model ran but gave
+    # no usable answer", which the job handlers report as a clean failure. As a
+    # RuntimeError it reached the PWA as "unexpected error: ..." — the same
+    # asymmetry model_output.py exists to remove.
+    raise ModelOutputError(
+        f"the model kept calling tools and never produced an answer "
+        f"({max_iterations} iterations) — raise max_tool_iterations in "
+        f"config.yaml, or narrow the instruction [openrouter]"
+    )
 
 
 # --------------------------------------------------------------------------

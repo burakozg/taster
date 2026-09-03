@@ -279,6 +279,12 @@ class WhiskyNote(BaseNote):
     peated: bool | None = None
     cask: str | None = None
     age_years: int | None = None
+    # Strength is printed on every whisky label and is the field that separates
+    # a 40% supermarket blend from a cask-strength bottling — it belongs next to
+    # the age, not only on beer/rakı (where `abv` started out, which is why
+    # whisky captures used to lose it: the model emitted it and Pydantic, with
+    # no such field here, silently dropped it).
+    abv: float | None = None
 
     def doc_id(self) -> str:
         return f"whisky:{self._slug()}:{self.date.isoformat()}"

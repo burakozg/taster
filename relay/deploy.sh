@@ -34,4 +34,13 @@ sed -e "s/^app = 'your-taster-relay'.*/app = '$FLY_APP'/" \
     "$REPO_ROOT/fly.toml" > "$OUT_DIR/fly.toml"
 
 echo "== deploying $FLY_APP (volume: $FLY_VOLUME) =="
-fly deploy -c "$OUT_DIR/fly.toml" -a "$FLY_APP"
+# The positional working directory is REQUIRED, not decoration. flyctl derives
+# the build context from the config file's own directory, so with only
+# `-c deploy-out/fly.toml` it looks for the Dockerfile inside deploy-out/ —
+# which holds nothing but the rendered toml — and fails with the misleading
+# "app does not have a Dockerfile or buildpacks configured", as though the app
+# were misconfigured on Fly's side rather than pointed at the wrong folder.
+# Passing the repo root explicitly keeps the context at relay/ (where the
+# Dockerfile and the COPY paths it uses live) while -c still supplies the
+# rendered config.
+fly deploy "$REPO_ROOT" -c "$OUT_DIR/fly.toml" -a "$FLY_APP"

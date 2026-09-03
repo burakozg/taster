@@ -30,9 +30,16 @@ class ClaudeConfig(BaseModel):
     naming confusion currently costs, but see model_output.truncated() for a
     user-facing message that used to read as Claude-specific when it wasn't."""
 
-    capture_model: str = "claude-opus-4-8"
-    lookup_model: str = "claude-opus-4-8"
-    max_tokens_capture: int = 4096
+    # Two models, split on the one axis that matters: does the job carry an
+    # image (see worker.process_job's model_for). This replaced a per-surface
+    # capture_model/lookup_model pair — both of those meant "the model for a
+    # photo job", so they were one setting wearing two labels.
+    image_model: str = "claude-opus-4-8"
+    # Everything without an image — chat captures, plain lookups, maintenance
+    # plans, regenerate-pairings. These are reasoning/tool/JSON jobs, and a
+    # vision-tuned model is the wrong instrument for all of them.
+    text_model: str = "claude-opus-4-8"
+    max_tokens_capture: int = 16384
     max_tokens_lookup: int = 2048
     # Bulk-maintenance plans emit one JSON object covering many records, and
     # reasoning/thinking tokens are spent from this same budget first — so it
@@ -46,6 +53,9 @@ class ClaudeConfig(BaseModel):
     repair_batch_size: int = 10
     effort: str = "medium"
     web_search_max_uses: int = 3
+    # Separate, larger budget for the AI-maintenance PLAN, which researches one
+    # fact per record rather than one product per call.
+    web_search_max_uses_manage: int = 25
     # Server-side web search on /lookup. Off historically — but only for Claude
     # and OpenAI, because Mistral's Conversations surface bundles the connector
     # and nobody parameterised it, so the same question searched on one provider
@@ -55,7 +65,7 @@ class ClaudeConfig(BaseModel):
     # case that needs facts the vault doesn't have. Set false to trade that for
     # latency — lookup is the interactive path.
     web_search_lookup: bool = True
-    max_tool_iterations: int = 6
+    max_tool_iterations: int = 8
 
 
 class ModelConfig(BaseModel):

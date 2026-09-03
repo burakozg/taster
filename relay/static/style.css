@@ -18,6 +18,7 @@
   --accent-weak: rgba(181, 101, 29, 0.1);
   --star: #d99b1c;
   --danger: #c0392b;
+  --warn: #b07d1a;
   --ok: #4b7a3f;
 
   /* Per-type accents for the tasting groups. */
@@ -50,6 +51,7 @@
     --accent-weak: rgba(217, 139, 63, 0.14);
     --star: #e6b53c;
     --danger: #e06a5c;
+    --warn: #d9a441;
     --ok: #7bb56a;
     --whisky: #d98b3f;
     --cigar: #b98a5e;
@@ -849,4 +851,25 @@ button.danger:hover, .rating-clear.danger:hover { color: #fff; background: var(-
 
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: 0.001ms !important; transition-duration: 0.001ms !important; }
+}
+
+/* A planned change that carries no value to write (see renderPlan): warn
+   rather than letting it read like a real edit. */
+.manage-empty {
+  color: var(--warn);
+  font-style: italic;
+}
+
+/* Which jobs a model dropdown governs — the split is by whether the job
+   carries a photo, which the label alone doesn't convey. */
+.admin-scope {
+  display: inline-block;
+  font-size: 0.7rem;
+  font-weight: 500;
+  color: var(--text-dim);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 0.05rem 0.4rem;
+  margin-left: var(--s1);
+  vertical-align: middle;
 }

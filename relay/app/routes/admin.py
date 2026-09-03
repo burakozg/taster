@@ -22,7 +22,12 @@ from app.db import (
     usage_by_day,
     usage_totals,
 )
-from app.models_catalog import MODEL_CATALOG, MODEL_IDS, prune_unknown_models
+from app.models_catalog import (
+    MODEL_CATALOG,
+    MODEL_IDS,
+    migrate_model_settings,
+    prune_unknown_models,
+)
 from app.rate_limit import rate_limit
 
 router = APIRouter(
@@ -42,22 +47,24 @@ async def get_settings() -> dict:
     # Pruned so the Admin tab shows "using the default" rather than a retired
     # id the dropdown can no longer render — matches what the worker will
     # actually receive (see routes/worker.py).
-    s = prune_unknown_models(get_admin_settings())
+    s = migrate_model_settings(prune_unknown_models(get_admin_settings()))
     return {
-        "capture_model": s.get("capture_model"),
-        "lookup_model": s.get("lookup_model"),
+        "image_model": s.get("image_model"),
+        "text_model": s.get("text_model"),
     }
 
 
 class AdminSettings(BaseModel):
     # None = clear the override, fall back to the worker's config.yaml.
-    capture_model: str | None = None
-    lookup_model: str | None = None
+    # image_model applies to jobs that carry a photo; text_model covers
+    # everything else (see worker.process_job's model_for).
+    image_model: str | None = None
+    text_model: str | None = None
 
 
 @router.put("/settings")
 async def put_settings(body: AdminSettings) -> dict:
-    for field in ("capture_model", "lookup_model"):
+    for field in ("image_model", "text_model"):
         value = getattr(body, field)
         if value is not None and value not in MODEL_IDS:
             raise HTTPException(status_code=400, detail=f"{field}: unknown model id {value!r}")

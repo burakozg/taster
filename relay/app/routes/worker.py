@@ -23,7 +23,7 @@ from app.db import (
     set_categories_cache,
     set_items_cache,
 )
-from app.models_catalog import prune_unknown_models
+from app.models_catalog import migrate_model_settings, prune_unknown_models
 
 logger = logging.getLogger("relay.worker")
 
@@ -39,7 +39,13 @@ async def next_job(settings: Settings = Depends(get_settings)) -> dict | None:
         # very next capture/lookup without any restart or inbound call.
         # Pruned first: a stored id the provider has since retired would
         # otherwise fail every job until someone re-picked one by hand.
-        job["model_overrides"] = prune_unknown_models(get_admin_settings())
+        # migrate_model_settings as well as prune: the worker now asks for
+        # `image_model`, so a choice still stored under the retired
+        # `capture_model` would be handed over under a name nothing reads and
+        # the job would quietly run on config.yaml's default instead.
+        job["model_overrides"] = migrate_model_settings(
+            prune_unknown_models(get_admin_settings())
+        )
     return job
 
 

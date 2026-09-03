@@ -31,8 +31,8 @@ from typing import Any
 import anthropic
 
 from app import usage
-from app.categories import NOTE_TYPES
-from app.claude_client import get_claude_client, log_call_error, log_call_summary
+from app.categories import CATEGORIES, NOTE_TYPES
+from app.claude_client import count_web_searches, get_claude_client, log_call_error, log_call_summary
 from app.config import Settings
 from app.couchdb_client import CouchDBClient
 from app.items_query import query_all_items
@@ -59,6 +59,12 @@ approves the plan first.
 
 Rules:
 - Only include records that actually need a change. Leave everything else out.
+- Each record carries a `missing` list naming the fields that are currently \
+empty (or set to the "unknown" placeholder). Use it to find the records an \
+instruction applies to — "every item with an empty common_notes" means every \
+record whose `missing` contains "common_notes". It is a projection of the \
+records themselves, so it is authoritative; you do not need query_notes to \
+find out which fields are blank.
 - Identify each target by its `uid` when it has one, and always include its \
 `doc_id` (the record's _id) and `name` so the human can recognise it.
 - Express edits as a list of {field, value} pairs. Use the real field names \
@@ -69,6 +75,32 @@ LIST field (tags, components) takes a JSON array of strings, e.g. \
 string for those.
 - For facts you don't know (a country of origin, a region), use web_search — \
 do not guess. Use "unknown" only when it truly can't be determined.
+- NEVER propose a change you have not actually filled in. Every change must \
+carry its real new value in `edits` (the sole exception is generate_uid, whose \
+value the system mints). A change with empty `edits` and a reason describing \
+work still to be done — "empty common_notes; needs a web-searched tasting \
+profile" — is a to-do list, not a plan; it is REJECTED on apply and wastes the \
+human's review. If you cannot determine a value for a record, leave that \
+record out of the plan entirely.
+- Your web_search budget is limited and shared across the whole plan. When the \
+instruction needs a lookup per record and there are more records than you can \
+research, cover as many as you can COMPLETELY, leave the rest out, and say so \
+in the summary — a short plan of real edits beats a long list of intentions.
+- ONE change per record. If a record needs two fields filled, that is one \
+change with two entries in `edits`, not two changes naming the same doc_id.
+
+A correct change, with the researched values IN `edits` where they are applied \
+from — this exact shape, every time:
+
+    {"doc_id": "whisky:togouchi-travel-exclusive:2024-06-18",
+     "uid": "…", "name": "Shiki", "type": "whisky",
+     "edits": [{"field": "abv", "value": "45"},
+               {"field": "common_notes", "value": "Soft peat and green apple over vanilla oak; light-bodied, gentle smoke on the finish."}],
+     "reason": "ABV and tasting profile from the distillery announcement and a review."}
+
+The same research written as `"reason": "ABV confirmed as 45% from the review; \
+filling common_notes and ABV in one go"` with `edits` empty or missing changes \
+NOTHING. The value must be in `edits`. Prose about the value is not the value.
 - If the instruction is to assign an identifier / uid to records missing one, \
 set generate_uid=true for those records and do NOT put a uid value in the \
 edits — the system mints a real unique id on apply.
@@ -91,6 +123,12 @@ MANAGE_PLAN_SCHEMA = {
                     "type": {"type": "string", "enum": list(NOTE_TYPES)},
                     "edits": {
                         "type": "array",
+                        "description": (
+                            "the actual new values, e.g. [{\"field\": \"abv\", \"value\": \"45\"}, "
+                            "{\"field\": \"common_notes\", \"value\": \"Sherry-cask: dried fruit, walnut.\"}]. "
+                            "REQUIRED and non-empty for every change except a uid-only one "
+                            "(generate_uid). If you researched a value, it belongs here."
+                        ),
                         "items": {
                             "type": "object",
                             "properties": {
@@ -108,9 +146,23 @@ MANAGE_PLAN_SCHEMA = {
                         },
                     },
                     "generate_uid": {"type": "boolean", "description": "mint a fresh uid on apply (do not put a uid in edits)"},
-                    "reason": {"type": "string"},
+                    "reason": {
+                        "type": "string",
+                        "description": (
+                            "one short line on WHY this record is being changed. Never put the new "
+                            "values here — they go in `edits` and nowhere else. A reason that "
+                            "describes work ('found the ABV and tasting profile') while `edits` is "
+                            "empty applies nothing and is rejected."
+                        ),
+                    },
                 },
-                "required": ["doc_id", "reason"],
+                # `edits` is required, not optional. It used to be optional while
+                # `reason` was mandatory, and a planner that had genuinely done
+                # the research would satisfy the schema by writing its findings
+                # up in the prose field and leaving `edits` off entirely —
+                # observed with real values in hand ("ABV confirmed as 45% from
+                # ...") and nothing to apply.
+                "required": ["doc_id", "reason", "edits"],
                 "additionalProperties": False,
             },
         },
@@ -120,8 +172,48 @@ MANAGE_PLAN_SCHEMA = {
 }
 
 
+# Fields a maintenance instruction typically backfills. Their VALUES are too
+# bulky to project for every record (common_notes alone is a paragraph each),
+# but the planner still has to know which are empty — "for every item with an
+# empty common_notes" is unanswerable from a projection that omits the field
+# entirely, and the planner's only recourse was to spend a query_notes round
+# trip pulling full documents. So each record carries the cheap half: the NAMES
+# of its empty fields.
+_ENRICHABLE_FIELDS = (
+    "common_notes", "notes", "producer", "country_of_origin", "region",
+    "abv", "cask", "age_years", "tags", "uid",
+)
+
+
+# Which of those fields each note type actually has — a beer has no `cask`, so
+# listing one as "missing" invites an edit that Pydantic then ignores, leaving a
+# change that reports success and writes nothing.
+_FIELDS_BY_TYPE = {c.type: frozenset(c.model.model_fields) for c in CATEGORIES}
+
+
+def _is_empty(value: Any) -> bool:
+    """Empty for maintenance purposes — including the "unknown" placeholder,
+    which is a filled-in field that still needs filling in."""
+    if value is None or value == [] or value == {}:
+        return True
+    if isinstance(value, str):
+        return not value.strip() or value.strip().lower() == "unknown"
+    return False
+
+
 def _compact(records: list[dict]) -> list[dict]:
-    return [{k: r[k] for k in _COMPACT_FIELDS if k in r} for r in records]
+    out = []
+    for r in records:
+        c = {k: r[k] for k in _COMPACT_FIELDS if k in r}
+        applicable = _FIELDS_BY_TYPE.get(r.get("type"), frozenset())
+        missing = [
+            f for f in _ENRICHABLE_FIELDS
+            if f in applicable and _is_empty(r.get(f))
+        ]
+        if missing:
+            c["missing"] = missing
+        out.append(c)
+    return out
 
 
 # --- regenerate pairings (dedicated maintenance: re-run just the pairing step
@@ -245,7 +337,7 @@ async def run_repair_pairings_plan(
     whose output is bounded; every call still sees the FULL inventory so matches
     can be drawn from the whole vault, not just the batch. Results are merged."""
     claude_cfg = settings.models.claude
-    model = model_override or claude_cfg.capture_model
+    model = model_override or claude_cfg.text_model
 
     records = await query_all_items(db)
     items = [r for r in records if r.get("type") != "pairing"]
@@ -313,7 +405,7 @@ async def run_manage_plan(
 ) -> dict:
     """Produce (do not apply) a plan of record changes for `instruction`."""
     claude_cfg = settings.models.claude
-    model = model_override or claude_cfg.capture_model
+    model = model_override or claude_cfg.text_model
 
     records = await query_all_items(db)
     prompt = (
@@ -339,7 +431,13 @@ async def run_manage_plan(
         client = get_claude_client(settings)
         tools: list[dict[str, Any]] = [
             QUERY_NOTES_TOOL,
-            {"type": "web_search_20260209", "name": "web_search", "max_uses": claude_cfg.web_search_max_uses},
+            # A maintenance plan researches ONE FACT PER RECORD ("give every
+            # whisky its ABV"), so the per-capture budget of 3 is the wrong
+            # scale here — it caps the plan at three researched records however
+            # many need one, and the planner fills the rest with intentions
+            # instead of values. See web_search_max_uses_manage.
+            {"type": "web_search_20260209", "name": "web_search",
+             "max_uses": claude_cfg.web_search_max_uses_manage},
         ]
         messages: list[dict[str, Any]] = [{"role": "user", "content": [{"type": "text", "text": prompt}]}]
         data = await _run_plan_loop(client, claude_cfg, model, tools, messages, db, manage_id=manage_id)
@@ -353,7 +451,7 @@ async def run_manage_plan(
 async def _run_plan_loop(client, claude_cfg, model, tools, messages, db, *, manage_id,
                          system=SYSTEM_PROMPT, output_schema=MANAGE_PLAN_SCHEMA, site="manage"):
     web_search = any("web_search" in str(t.get("type", "")) for t in tools)
-    iterations = query_notes_calls = input_tokens = output_tokens = 0
+    iterations = query_notes_calls = input_tokens = output_tokens = web_searches = 0
     stop_reason: str | None = None
     # See capture_service._run_extraction_loop: web_search_20260209 runs code
     # server-side to filter results, and the container it provisions must be
@@ -371,7 +469,7 @@ async def _run_plan_loop(client, claude_cfg, model, tools, messages, db, *, mana
             job_id=manage_id, site=site, model=model, stop_reason=stop_reason,
             input_tokens=input_tokens, output_tokens=output_tokens, iterations=iterations,
             query_notes=query_notes_calls, web_search=web_search,
-            duration_s=time.monotonic() - started,
+            web_searches=web_searches, duration_s=time.monotonic() - started,
         )
 
     for _ in range(claude_cfg.max_tool_iterations):
@@ -397,6 +495,7 @@ async def _run_plan_loop(client, claude_cfg, model, tools, messages, db, *, mana
         output_tokens += response.usage.output_tokens
         usage.record("anthropic", model, response.usage.input_tokens, response.usage.output_tokens)
         stop_reason = response.stop_reason
+        web_searches += count_web_searches(response.content, manage_id, site)
         if response.container is not None:
             container_id = response.container.id
 
@@ -492,11 +591,25 @@ async def _apply_one(db: CouchDBClient, change: dict) -> None:
     if target is None:
         raise ManageFailed("record not found")
 
+    edits = [e for e in (change.get("edits") or []) if e.get("field")]
+    # A change that carries no instruction mutates nothing, validates cleanly,
+    # and used to be reported as "applied" — the worst possible outcome, since
+    # the plan looked like it worked. Seen for real when a planner proposed ten
+    # `common_notes` backfills as reasons ("needs web-searched tasting profile")
+    # without ever filling in the values. Nothing to apply is a failed change,
+    # not an applied one.
+    mints_uid = bool(change.get("generate_uid")) and not target.get("uid")
+    if not (edits or mints_uid
+            or change.get("pairings") is not None
+            or change.get("cocktails") is not None):
+        raise ManageFailed(
+            "change carries no edits — the planner described the change "
+            "without filling in a value"
+        )
+
     data = {k: v for k, v in target.items() if k not in ("_rev", "markdown")}
-    for edit in change.get("edits") or []:
-        field, value = edit.get("field"), edit.get("value")
-        if field:
-            data[field] = value
+    for edit in edits:
+        data[edit["field"]] = edit.get("value")
 
     # Regenerate-pairings changes carry a structured `pairings` list (which the
     # {field, value:string} edits can't express); write it to the note's

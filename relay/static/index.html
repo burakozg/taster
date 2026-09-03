@@ -133,14 +133,19 @@
         <p class="hint">Applies from the next capture/lookup — the worker picks
           the choice up with each job, no restart. € = relative cost.
           gpt-* models need OPENAI_API_KEY, mistral-*/pixtral-* need
-          MISTRAL_API_KEY, and vendor/model ones (Gemini, Grok, Kimi, Qwen) go
-          through OpenRouter and need OPENROUTER_API_KEY — in the worker's
-          .env.</p>
-        <label class="admin-label">Capture model
-          <select id="admin-capture-model"></select>
+          MISTRAL_API_KEY, and vendor/model ones (Gemini, Grok, Kimi, Qwen,
+          DeepSeek) go through OpenRouter and need OPENROUTER_API_KEY — in the
+          worker's .env.</p>
+        <p class="hint">Split by whether the job carries a photo — the only
+          shape that needs vision. Everything else is reasoning and
+          tool-calling work, where a vision model is the wrong instrument.</p>
+        <label class="admin-label">Image model
+          <span class="admin-scope">photo captures &middot; shop lookups</span>
+          <select id="admin-image-model"></select>
         </label>
-        <label class="admin-label">Lookup model
-          <select id="admin-lookup-model"></select>
+        <label class="admin-label">Text model
+          <span class="admin-scope">chat &middot; lookups &middot; AI Maintain &middot; pairings</span>
+          <select id="admin-text-model"></select>
         </label>
         <div class="manage-actions">
           <button id="admin-save">Save</button>

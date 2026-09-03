@@ -74,7 +74,7 @@ def get_mistral_client(settings: Settings):
                 "the Mistral SDK isn't importable in this worker build "
                 f"({type(e).__name__}: {e}) — expected mistralai>=2.0 exposing "
                 "`mistralai.client.Mistral`; rebuild the worker "
-                "(./qnap/deploy.sh), or switch the model back to a Claude/OpenAI "
+                "(./deploy), or switch the model back to a Claude/OpenAI "
                 "one in Admin → Models"
             ) from e
 

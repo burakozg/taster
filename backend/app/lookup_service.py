@@ -16,7 +16,7 @@ from typing import Any
 import anthropic
 
 from app import usage
-from app.claude_client import get_claude_client, log_call_error, log_call_summary
+from app.claude_client import count_web_searches, get_claude_client, log_call_error, log_call_summary
 from app.config import Settings
 from app.couchdb_client import CouchDBClient
 from app.errors import PhaseError
@@ -71,7 +71,7 @@ async def run_lookup(
     # Admin-panel choice (delivered per job by the relay) wins over the baked-in
     # config.yaml default. Non-Claude ids route to an alternate provider module
     # — see providers.py for the id → provider table.
-    model = model_override or claude_cfg.lookup_model
+    model = model_override or claude_cfg.text_model
     if (provider := provider_for(model)) is not None:
         answer = await provider.answer_question(
             settings, db,
@@ -103,7 +103,7 @@ async def run_lookup(
             "max_uses": claude_cfg.web_search_max_uses,
         })
 
-    iterations = query_notes_calls = input_tokens = output_tokens = 0
+    iterations = query_notes_calls = input_tokens = output_tokens = web_searches = 0
     stop_reason: str | None = None
     # web_search_20260209 filters results by running code server-side, which
     # provisions a container that must be named on every later turn — same
@@ -122,7 +122,7 @@ async def run_lookup(
             job_id=lookup_id, site="lookup", model=model, stop_reason=stop_reason,
             input_tokens=input_tokens, output_tokens=output_tokens, iterations=iterations,
             query_notes=query_notes_calls, web_search=claude_cfg.web_search_lookup,
-            duration_s=time.monotonic() - started,
+            web_searches=web_searches, duration_s=time.monotonic() - started,
         )
 
     for _ in range(claude_cfg.max_tool_iterations):
@@ -145,6 +145,7 @@ async def run_lookup(
         output_tokens += response.usage.output_tokens
         usage.record("anthropic", model, response.usage.input_tokens, response.usage.output_tokens)
         stop_reason = response.stop_reason
+        web_searches += count_web_searches(response.content, lookup_id, "lookup")
         if response.container is not None:
             container_id = response.container.id
 

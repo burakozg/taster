@@ -20,7 +20,7 @@ from app.capture_service import run_capture
 from app.categories import categories_metadata
 from app.config import Settings, get_settings
 from app.couchdb_client import CouchDBClient
-from app.errors import PhaseError
+from app.errors import PhaseError, exc_label
 from app.items_query import query_all_items
 from app.logging_setup import secret_state, setup_logging
 from app.lookup_service import run_lookup
@@ -52,6 +52,26 @@ async def process_job(job: dict, settings: Settings, db: CouchDBClient) -> dict:
     # (empty when nothing is set — the services fall back to config.yaml).
     overrides = job.get("model_overrides") or {}
 
+    def model_for() -> str:
+        """The model for this job, chosen by whether it actually carries an image.
+
+        A vision model earns its slot on the one job that needs it — reading a
+        label photo — and is a liability on every other, which is reasoning,
+        tool-calling and JSON work. Three of the four jobs that once shared a
+        single `capture_model` never touch an image: chat captures, maintenance
+        plans and regenerate-pairings. They ran on the vision model purely
+        because they arrived through the same setting, and it showed — the
+        maintenance planner narrated its plan instead of producing one.
+
+        Resolved to a concrete id here (admin override, else config.yaml) so
+        every service receives an explicit model rather than re-deriving the
+        default from a field name that no longer describes the split.
+        """
+        cfg = settings.models.claude
+        if payload.get("image_b64"):
+            return overrides.get("image_model") or cfg.image_model
+        return overrides.get("text_model") or cfg.text_model
+
     if job["type"] == "capture_photo":
         result = await run_capture(
             job["id"], settings, db,
@@ -60,14 +80,14 @@ async def process_job(job: dict, settings: Settings, db: CouchDBClient) -> dict:
             stars=payload.get("stars"),
             image_b64=payload["image_b64"],
             image_media_type=payload.get("image_media_type"),
-            model_override=overrides.get("capture_model"),
+            model_override=model_for(),
         )
         return result.model_dump(mode="json")
 
     if job["type"] == "capture_chat":
         result = await run_capture(
             job["id"], settings, db, source="chat", text=payload["text"],
-            model_override=overrides.get("capture_model"),
+            model_override=model_for(),
         )
         return result.model_dump(mode="json")
 
@@ -77,7 +97,7 @@ async def process_job(job: dict, settings: Settings, db: CouchDBClient) -> dict:
             question=payload["question"],
             image_b64=payload.get("image_b64"),
             image_media_type=payload.get("image_media_type"),
-            model_override=overrides.get("lookup_model"),
+            model_override=model_for(),
         )
         return {"answer": result.answer}
 
@@ -86,7 +106,7 @@ async def process_job(job: dict, settings: Settings, db: CouchDBClient) -> dict:
         return await run_manage_plan(
             job["id"], settings, db,
             instruction=payload["instruction"],
-            model_override=overrides.get("capture_model"),
+            model_override=model_for(),
         )
 
     if job["type"] == "manage_apply":
@@ -102,7 +122,7 @@ async def process_job(job: dict, settings: Settings, db: CouchDBClient) -> dict:
         # item (no re-capture). Applied via manage_apply, like any plan.
         return await run_repair_pairings_plan(
             job["id"], settings, db,
-            model_override=overrides.get("capture_model"),
+            model_override=model_for(),
         )
 
     if job["type"] == "sync_status":
@@ -126,10 +146,6 @@ async def process_job(job: dict, settings: Settings, db: CouchDBClient) -> dict:
     raise ValueError(f"unknown job type: {job['type']!r}")
 
 
-def _exc_summary(exc: BaseException) -> str:
-    return f"{type(exc).__name__}: {exc}"
-
-
 def _log_startup_config(settings: Settings) -> None:
     """GEN-8: echo the effective non-secret config once at startup; secrets
     are reported present/absent only (GEN-3)."""
@@ -140,13 +156,13 @@ def _log_startup_config(settings: Settings) -> None:
     logger.info(
         "worker config: relay_url=%s poll_interval_s=%.1f snapshot_interval_s=%.1f "
         "heartbeat_interval_s=%.0f couchdb_url=%s couchdb_db=%s couchdb_user=%s "
-        "capture_model=%s lookup_model=%s effort=%s max_tokens_capture=%d "
+        "image_model=%s text_model=%s effort=%s max_tokens_capture=%d "
         "max_tokens_lookup=%d web_search_max_uses=%d max_tool_iterations=%d usage_day=%s "
         "anthropic_api_key=%s openai_api_key=%s mistral_api_key=%s openrouter_api_key=%s "
         "worker_api_key=%s couchdb_password=%s",
         settings.relay_url, settings.poll_interval_s, settings.items_snapshot_interval_s,
         settings.heartbeat_interval_s, settings.couchdb_url, settings.couchdb_db,
-        settings.couchdb_user, c.capture_model, c.lookup_model, c.effort,
+        settings.couchdb_user, c.image_model, c.text_model, c.effort,
         c.max_tokens_capture, c.max_tokens_lookup, c.web_search_max_uses,
         c.max_tool_iterations, datetime.now().astimezone().strftime("%Y-%m-%d %Z%z"),
         secret_state(settings.anthropic_api_key),
@@ -221,7 +237,7 @@ async def run_worker_loop() -> None:
                 consecutive_poll_failures += 1
                 if consecutive_poll_failures == 1:
                     first_failure_t = time.monotonic()
-                    logger.warning("relay poll failed (will retry): %s", _exc_summary(e))
+                    logger.warning("relay poll failed (will retry): %s", exc_label(e))
                 # Subsequent failures are counted but not logged (no traceback
                 # spam at a 3s interval) — the recovery line above reports how
                 # many and how long once the relay comes back.
@@ -325,7 +341,7 @@ async def _push_usage(relay: RelayClient) -> None:
     try:
         await relay.push_usage(report_id, rows)
     except Exception as e:  # noqa: BLE001 — retried on the next pass
-        logger.warning("usage push failed (will retry): %s", _exc_summary(e))
+        logger.warning("usage push failed (will retry): %s", exc_label(e))
     else:
         usage.ack(report_id)
 
@@ -345,7 +361,7 @@ async def _reconcile(db: CouchDBClient) -> int:
     try:
         return await reconcile_vault_edits(db)
     except Exception as e:  # noqa: BLE001
-        logger.warning("reconcile pass failed: %s", _exc_summary(e))
+        logger.warning("reconcile pass failed: %s", exc_label(e))
         return 0
 
 
@@ -359,7 +375,7 @@ async def _push_snapshot(relay: RelayClient, db: CouchDBClient, *, trigger: str)
         logger.info("snapshot pushed items=%d trigger=%s", len(items), trigger)
         return datetime.now(timezone.utc)
     except Exception as e:  # noqa: BLE001
-        logger.warning("failed to push items snapshot trigger=%s: %s", trigger, _exc_summary(e))
+        logger.warning("failed to push items snapshot trigger=%s: %s", trigger, exc_label(e))
         return None
 
 

@@ -546,8 +546,8 @@ function initSearch() {
 
 function initAdmin() {
   const statusEl = document.getElementById("admin-status");
-  const captureSel = document.getElementById("admin-capture-model");
-  const lookupSel = document.getElementById("admin-lookup-model");
+  const imageSel = document.getElementById("admin-image-model");
+  const textSel = document.getElementById("admin-text-model");
   const saveBtn = document.getElementById("admin-save");
   const saveStatus = document.getElementById("admin-save-status");
   const jobsEl = document.getElementById("admin-jobs");
@@ -572,8 +572,8 @@ function initAdmin() {
       apiFetch("/admin/models"),
       apiFetch("/admin/settings"),
     ]);
-    fillSelect(captureSel, models, settings.capture_model);
-    fillSelect(lookupSel, models, settings.lookup_model);
+    fillSelect(imageSel, models, settings.image_model);
+    fillSelect(textSel, models, settings.text_model);
   }
 
   async function loadStatus() {
@@ -759,8 +759,8 @@ function initAdmin() {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          capture_model: captureSel.value || null,
-          lookup_model: lookupSel.value || null,
+          image_model: imageSel.value || null,
+          text_model: textSel.value || null,
         }),
       });
       saveStatus.textContent = "Saved — applies from the next job.";
@@ -825,6 +825,17 @@ function initManage() {
           const ed = document.createElement("div");
           ed.className = "manage-edits";
           ed.textContent = edits.join("  ·  ");
+          li.appendChild(ed);
+        } else if (!change.pairings && !change.cocktails) {
+          // A change with nothing to apply. It used to render as a bare title +
+          // reason, indistinguishable from a real edit, and applying it did
+          // nothing while reporting success. Now it is labelled here and
+          // rejected on apply — and it starts unticked so "apply selected"
+          // skips it by default.
+          cb.checked = false;
+          const ed = document.createElement("div");
+          ed.className = "manage-edits manage-empty";
+          ed.textContent = "no value proposed — nothing to apply";
           li.appendChild(ed);
         }
         // Regenerate-pairings changes carry a structured `pairings` list instead
@@ -1173,14 +1184,14 @@ const MODAL_HIDDEN_FIELDS = new Set([
 // as empty inputs so they can be filled in.
 // Fallback edit forms (see the note on GROUPS) — replaced by /categories.
 let EDIT_FIELDS = {
-  whisky: ["name", "producer", "rating", "status", "stock", "country_of_origin", "region", "category", "peated", "cask", "age_years", "price_sek", "recommended_by", "tags", "notes", "common_notes"],
+  whisky: ["name", "producer", "rating", "status", "stock", "country_of_origin", "region", "category", "peated", "cask", "age_years", "abv", "price_sek", "recommended_by", "tags", "notes", "common_notes"],
   cigar: ["name", "producer", "rating", "status", "stock", "country_of_origin", "wrapper", "vitola", "strength", "price_sek", "recommended_by", "tags", "notes", "common_notes"],
   coffee: ["name", "producer", "rating", "status", "stock", "country_of_origin", "origin", "roaster", "process", "roast_level", "grind_size", "dose_g", "brew_time_s", "grinder", "machine", "price_sek", "recommended_by", "tags", "notes", "common_notes"],
   pairing: ["rating", "tags", "notes"],
 };
 
 let FIELD_KIND = {
-  rating: "number", price_sek: "number", age_years: "number", dose_g: "number", brew_time_s: "number", stock: "number",
+  rating: "number", price_sek: "number", age_years: "number", dose_g: "number", brew_time_s: "number", stock: "number", abv: "number",
   peated: "bool", status: "status", tags: "tags", components: "tags", notes: "textarea", common_notes: "textarea",
 };
 

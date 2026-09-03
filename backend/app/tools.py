@@ -5,7 +5,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from app.categories import NOTE_TYPES
+from app.categories import NOTE_TYPES, PAIR_GROUPS, types_in_pair_group
 from app.couchdb_client import CouchDBClient
 
 QUERY_NOTES_TOOL = {
@@ -15,12 +15,24 @@ QUERY_NOTES_TOOL = {
         "Use this to: find prior notes by name/producer (repeat-detection, resolving a "
         "pairing report to real item ids), filter by type/region/rating/status/tags to "
         "answer lookup questions, or ground pairing suggestions in items actually tasted "
-        "and rated rather than guessing generically."
+        "and rated rather than guessing generically. To find a partner for an item, filter "
+        "by `pair_group` — one call covers the entire opposite side."
     ),
     "input_schema": {
         "type": "object",
         "properties": {
             "type": {"type": "string", "enum": list(NOTE_TYPES)},
+            "pair_group": {
+                "type": "string",
+                "enum": list(PAIR_GROUPS),
+                "description": (
+                    "search one whole SIDE of a pairing at once: \"companion\" is every "
+                    "cigar/pipe/chocolate note, \"drink\" is every whisky/coffee/beer/rakı note. "
+                    "This is what to use when looking for something to pair an item WITH — one "
+                    "call covers the opposite side instead of one call per type. Ignored if "
+                    "`type` is also given."
+                ),
+            },
             "name_contains": {"type": "string", "description": "case-insensitive substring match on name"},
             "producer_contains": {"type": "string", "description": "case-insensitive substring match on producer"},
             "region": {"type": "string"},
@@ -38,8 +50,13 @@ async def query_notes_impl(db: CouchDBClient, tool_input: dict[str, Any]) -> lis
     # Default to our note types — the db also holds LiveSync's internal
     # documents (chunks, file entries), which must never match a query.
     selector: dict[str, Any] = {"type": {"$in": list(NOTE_TYPES)}}
+    # `type` is the narrower filter, so it wins when both are given; otherwise a
+    # pair_group narrows the default $in to just that side's types.
     if t := tool_input.get("type"):
         selector["type"] = t
+    elif group := tool_input.get("pair_group"):
+        if types := types_in_pair_group(group):
+            selector["type"] = {"$in": list(types)}
     if status := tool_input.get("status"):
         selector["status"] = status
     if region := tool_input.get("region"):

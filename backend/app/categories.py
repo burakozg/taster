@@ -70,7 +70,7 @@ CATEGORIES: tuple[Category, ...] = (
     Category("cigar", "Cigars", CigarNote,
              _HEAD + ("wrapper", "vitola", "strength") + _TAIL),
     Category("whisky", "Whiskies", WhiskyNote,
-             _HEAD + ("region", "category", "peated", "cask", "age_years") + _TAIL,
+             _HEAD + ("region", "category", "peated", "cask", "age_years", "abv") + _TAIL,
              folder="Whisky"),
     Category("coffee", "Coffee Beans", CoffeeNote,
              _HEAD + ("brew_method", "origin", "roaster", "process", "roast_level",
@@ -93,6 +93,10 @@ CATEGORIES: tuple[Category, ...] = (
 
 NOTE_TYPES: tuple[str, ...] = tuple(c.type for c in CATEGORIES)
 ITEM_TYPES: tuple[str, ...] = tuple(c.type for c in CATEGORIES if c.is_item)
+# Pairing side -> the item types on it. A pairing is always cross-side, so
+# "what could pair with this whisky?" is a query for a whole GROUP (cigar,
+# pipe AND chocolate), never a single type — see types_in_pair_group.
+PAIR_GROUPS: tuple[str, ...] = ("companion", "drink")
 # type -> full vault folder path ("Tastings/Whisky", …). Single source for the
 # note-to-file projection (couchdb_client) so a new category's folder is covered
 # automatically.
@@ -103,6 +107,25 @@ _BY_TYPE = {c.type: c for c in CATEGORIES}
 def label_for(note_type: str) -> str:
     c = _BY_TYPE.get(note_type)
     return c.label if c else note_type
+
+
+def types_in_pair_group(group: str) -> tuple[str, ...]:
+    """The item types on one side of a pairing ("companion" | "drink").
+
+    The unit of a pairing question is the SIDE, not the type: a whisky pairs
+    with any companion, which is three separate `type` values. Without this,
+    "find me something to pair with this" is three queries against a tool
+    budget that only allows one or two — so the query simply doesn't happen.
+    """
+    return tuple(c.type for c in CATEGORIES if c.is_item and pair_group(c.type) == group)
+
+
+def opposite_pair_group(note_type: str) -> str | None:
+    """The side a note of this type pairs WITH, or None for a non-item type."""
+    group = pair_group(note_type)
+    if group is None:
+        return None
+    return "drink" if group == "companion" else "companion"
 
 
 def item_types_phrase() -> str:

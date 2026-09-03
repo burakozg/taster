@@ -13,19 +13,32 @@
 # ID once you've measured real latency and are happy with lookup quality).
 
 claude:
-  # Model used for /capture/photo and /capture/chat (vision + web search +
-  # structured output + query_notes tool).
-  capture_model: claude-opus-4-8
+  # Model for every job that CARRIES AN IMAGE: photo captures and shop-mode
+  # (photo) lookups. This is the only job shape that needs vision, so it is the
+  # only one that should pay for a vision model.
+  image_model: claude-opus-4-8
 
-  # Model used for /lookup, including shop-mode (photo) lookups.
-  lookup_model: claude-opus-4-8
+  # Model for every job that carries NO image: chat captures, plain lookups,
+  # maintenance plans and regenerate-pairings. Those are reasoning, tool-calling
+  # and JSON jobs; a vision-tuned model is the wrong instrument for all of them
+  # and it showed — three of these four used to run on capture_model purely
+  # because they arrived through the same setting.
+  # Needs OPENROUTER_API_KEY in the worker's .env (any `vendor/model` id does).
+  text_model: deepseek/deepseek-v4-pro
 
   # Output token ceilings. Capture responses are one structured note — small.
   # Lookup responses are conversational answers over query results.
   # Adaptive thinking is spent from these budgets BEFORE any visible output, so
   # they need headroom well beyond the size of the answer itself; too tight and
   # the response truncates mid-JSON (capture) or comes back empty (lookup).
-  max_tokens_capture: 8192
+  #
+  # Capture is 16384 rather than 8192 because a capture must web_search for
+  # `common_notes` and query_notes for pairing matches before it writes
+  # anything — at 8192 that enrichment work competes for budget with the JSON
+  # it exists to fill in, and the note either truncates mid-string or arrives
+  # stripped back to the fields that cost nothing. A ceiling, not a spend:
+  # you are still billed only for tokens actually produced.
+  max_tokens_capture: 16384
   max_tokens_lookup: 4096
 
   # Effort level: low | medium | high | xhigh | max. Capture and lookup are
@@ -39,6 +52,15 @@ claude:
   # research spiral can't run up the bill.
   web_search_max_uses: 3
 
+  # The same cap for an AI-maintenance plan, which is a different shape of job:
+  # a capture researches one product, a plan researches one fact per RECORD
+  # ("give every whisky its ABV"). At 3 the planner could only research three
+  # records however many needed it, and filled the remainder with descriptions
+  # of the work instead of values — those are now rejected on apply rather than
+  # silently doing nothing. Raise if you routinely maintain in bigger batches;
+  # each search is billed, so this is the knob that governs a plan's cost.
+  web_search_max_uses_manage: 25
+
   # Whether /lookup also gets web search. Applies to all three providers
   # equally — each executes the search server-side, and each needs the tool
   # declared per request (no provider searches implicitly). Mostly matters for
@@ -48,5 +70,9 @@ claude:
 
   # Safety cap on the manual tool-use / pause_turn resume loops in
   # capture_service.py and lookup_service.py, so a misbehaving loop can't
-  # spin forever and rack up spend.
-  max_tool_iterations: 6
+  # spin forever and rack up spend. A fully-enriched capture spends these on:
+  # search turn(s) (each server-side search may come back as a pause_turn to
+  # resume), one query_notes turn for the pairing side, then the final answer
+  # — 6 left no slack and cut that off as "exceeded max tool-use iterations".
+  # Spend stays bounded by web_search_max_uses and max_tokens_* regardless.
+  max_tool_iterations: 8

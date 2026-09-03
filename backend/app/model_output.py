@@ -66,17 +66,87 @@ def refused(provider: str, detail: str | None = None) -> ModelOutputError:
     )
 
 
+def _extract_json_object(text: str) -> str | None:
+    """The first balanced {...} in `text`, or None.
+
+    Last resort for a reply with prose around the JSON. Brace counting is
+    string-aware: a `{` or `}` inside a string value (a tasting note about a
+    "{weird} label", an escaped quote) must not move the depth, or the slice
+    ends in the wrong place and the salvage produces garbage instead of failing
+    honestly.
+    """
+    start = text.find("{")
+    if start == -1:
+        return None
+    depth = 0
+    in_string = escaped = False
+    for i in range(start, len(text)):
+        c = text[i]
+        if escaped:
+            escaped = False
+            continue
+        if c == "\\" and in_string:
+            escaped = True
+        elif c == '"':
+            in_string = not in_string
+        elif not in_string:
+            if c == "{":
+                depth += 1
+            elif c == "}":
+                depth -= 1
+                if depth == 0:
+                    return text[start:i + 1]
+    return None
+
+
 def loads_model_json(text: str, provider: str) -> dict:
-    """Parse the model's JSON reply, tolerating a ```json fence.
+    """Parse the model's JSON reply, tolerating the wrappers models put round it.
 
     No provider path enforces the output schema any more — the Claude path
-    describes it in the prompt, and the other two pass `strict: False` — so a
-    fenced or prose-wrapped reply is possible everywhere, not just on Claude.
+    describes it in the prompt, and the other three pass `strict: False` — so a
+    fenced or prose-wrapped reply is possible everywhere.
+
+    Reasoning models made this sharper: they narrate before answering, and on
+    OpenRouter that narration can arrive in `content` ahead of the JSON (or as a
+    `<think>` block around it). The bare json.loads that used to be here failed
+    those with "Expecting value: line 1 column 1 (char 0)" — an error that
+    describes column 1 of something it never showed you, and reads like an empty
+    response when the reply was actually 4KB of correct work with a sentence in
+    front of it.
     """
     stripped = text.strip()
+
+    # ```json … ``` fence.
     if stripped.startswith("```"):
-        stripped = stripped.split("\n", 1)[-1].rsplit("```", 1)[0]
+        stripped = stripped.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
+
+    # <think> … </think> preamble, closed or (when truncated) unclosed.
+    if stripped.startswith("<think>"):
+        _, _, after = stripped.partition("</think>")
+        stripped = (after or "").strip()
+
     try:
         return json.loads(stripped)
-    except json.JSONDecodeError as e:
-        raise ModelOutputError(f"model output was not valid JSON: {e} [{provider}]") from e
+    except json.JSONDecodeError:
+        pass
+
+    if (candidate := _extract_json_object(stripped)) is not None:
+        try:
+            return json.loads(candidate)
+        except json.JSONDecodeError:
+            pass
+
+    # Still unparseable. The full text is content (GEN-4) so it goes to DEBUG,
+    # which is off by default — hence a short shape summary in the message
+    # itself, because "char 0" alone sent us hunting for an empty response.
+    raise ModelOutputError(
+        f"model output was not valid JSON — {_shape(text)} [{provider}]"
+    )
+
+
+def _shape(text: str) -> str:
+    """A one-line description of unparseable output: how much, and how it opens."""
+    if not text.strip():
+        return f"the reply was empty ({len(text)} chars, all whitespace)"
+    prefix = " ".join(text.strip()[:60].split())
+    return f"{len(text)} chars starting {prefix!r}"
