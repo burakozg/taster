@@ -1,0 +1,184 @@
+#!/usr/bin/env bash
+# Deploy the Tasting Log. Run it on the Mac.
+#
+#   ./deploy            build the worker, ship it and the compose file, bring the stack up
+#   ./deploy ship       build and ship only — the running containers are left alone
+#   ./deploy apply      bring the stack up from what's already on the NAS
+#   ./deploy relay      deploy the Fly relay (relay/deploy.sh)
+#   ./deploy check      what's running on the NAS, and is CouchDB answering
+#
+# See homelab/README.md for the contract these verbs follow, and INSTALL.md for
+# the one-time setup (the .env files, CouchDB's credentials) this assumes exists.
+#
+# Two services: CouchDB and the worker. There is no reverse proxy and no inbound
+# connection at all — the worker polls the Fly relay outbound for jobs and posts
+# results back the same way, which works through any NAT with zero router
+# configuration. See ARCHITECTURE.md.
+set -euo pipefail
+
+cd "$(dirname "$0")"
+. ./deploy.lib.sh
+nas_load_env "$PWD" "/share/Container/taster"
+
+# The worker's own address on the LAN: none, deliberately. Only CouchDB has one,
+# because that is what Obsidian LiveSync clients connect to.
+APP_LAN_IP_COUCHDB="${APP_LAN_IP_COUCHDB:-${TASTER_COUCHDB_LAN_IP:-10.0.0.2}}"
+
+LIFECYCLE=compose
+TAG="taster-worker:nas"
+COUCHDB_CONFIG_SHIPPED=false
+
+# CouchDB's own configuration — CORS and the auth switches Obsidian LiveSync
+# needs. Tracked and shipped rather than hand-placed: it holds no secrets, and
+# losing it is what once broke LiveSync with a completely misleading error
+# ("Failed to fetch by API. 201" on the client; OPTIONS preflight 401 in the
+# server log).
+#
+# It has to be written THROUGH the container, not with nas_put. The official
+# entrypoint runs `chown -R couchdb:couchdb /opt/couchdb` and forces 0755/0644
+# over the bind-mounted config directory, so once the container has started once
+# the deploy account can neither write the file nor chmod the directory. Inside
+# the container we are the couchdb user and it is ours. The nas_put fallback is
+# for a first install, before the container exists.
+ship_couchdb_config() {
+  local src=qnap/couchdb/10-obsidian-livesync.ini
+  local dst_in=/opt/couchdb/etc/local.d/10-obsidian-livesync.ini
+  local want got
+  want="$(wc -c < "$src" | tr -d '[:space:]')"
+
+  echo "== shipping CouchDB config =="
+  if ! nas_ssh "'${NAS_DOCKER_BIN}' exec taster-couchdb test -d /opt/couchdb/etc/local.d" 2>/dev/null; then
+    echo "  (container not running — writing to the host for a first install)"
+    nas_put "$src" "${NAS_APP_DIR}/couchdb/config/10-obsidian-livesync.ini"
+    echo "  ✓ ${want} bytes"
+    return 0
+  fi
+
+  # Compare before writing. CouchDB reads its .ini files at boot only, so a
+  # changed file means a restart — and restarting the database on every deploy,
+  # when this file changes about once a year, is not a reasonable default.
+  local current
+  current="$(nas_ssh "'${NAS_DOCKER_BIN}' exec taster-couchdb sh -c 'cat ${dst_in} 2>/dev/null'" || true)"
+  if [ "$current" = "$(cat "$src")" ]; then
+    echo "  ✓ unchanged (${want} bytes) — no restart needed"
+    return 0
+  fi
+
+  nas_ssh "'${NAS_DOCKER_BIN}' exec -i taster-couchdb sh -c 'cat > ${dst_in}'" < "$src" \
+    || die "Couldn't write ${dst_in} inside taster-couchdb."
+  # `sh -c` so the redirect happens INSIDE the container. Written as
+  # `exec ... wc -c < path` the shell on the NAS host opens the path instead,
+  # and reports "No such file or directory" for a file that is present and
+  # correct in the container.
+  got="$(nas_ssh "'${NAS_DOCKER_BIN}' exec taster-couchdb sh -c 'wc -c < ${dst_in}'" | tr -d '[:space:]')"
+  [ "$want" = "$got" ] \
+    || die "CouchDB config didn't copy cleanly (${want} bytes here, ${got} there)."
+  echo "  ✓ ${want} bytes (changed — CouchDB will be restarted)"
+
+  COUCHDB_CONFIG_SHIPPED=true
+}
+
+# ── ship ──────────────────────────────────────────────────────────────────────
+do_ship() {
+  nas_require_reachable
+  nas_ship_image "$TAG" "$PWD/backend"
+
+  # The compose file goes UP with the image, rather than being assumed already
+  # present. It used to be a manual step in INSTALL.md, which meant `apply` ran
+  # whatever had been pasted onto the NAS months earlier — a mount or a memory
+  # limit changed here had no effect and nothing said so.
+  echo "== shipping the compose definition =="
+  # Rendered first: the file carries a MAC placeholder rather than a tracked
+  # address — see its header and nas_mac_for_ip.
+  nas_render qnap/docker-compose.yml deploy-out/docker-compose.yml \
+    "s#APP_MAC_COUCHDB_PLACEHOLDER#$(nas_mac_for_ip "${APP_LAN_IP_COUCHDB}")#"
+  nas_put deploy-out/docker-compose.yml "${NAS_APP_DIR}/docker-compose.yml"
+
+  ship_couchdb_config
+}
+
+# ── apply ─────────────────────────────────────────────────────────────────────
+do_apply() {
+  nas_require_reachable
+  nas_compose_up
+
+  # Only when this run shipped it: the .ini is read at boot, and `up -d` has no
+  # reason to restart CouchDB for a file whose contents it cannot see.
+  if $COUCHDB_CONFIG_SHIPPED; then
+    echo "→ Restarting CouchDB so it re-reads its config …"
+    nas_ssh "cd '${NAS_APP_DIR}' && ${NAS_DOCKER_ENV} '${NAS_DOCKER_BIN}' compose restart taster-couchdb" \
+      || die "Couldn't restart CouchDB."
+  fi
+  echo
+  # Checked from here, over the LAN the LiveSync clients use — not from inside
+  # the container. See nas_wait_reachable. 401 is CouchDB's proof of life.
+  nas_wait_reachable "CouchDB" "http://${APP_LAN_IP_COUCHDB}:5984" "/_up" "2..|401" \
+    || die "Deployed, but CouchDB is not reachable over the LAN — see above."
+  echo
+  echo "done. Worker logs:"
+  echo "  ssh -p $NAS_SSH_PORT $NAS_SSH \"'$NAS_DOCKER_BIN' logs -f taster-worker\""
+}
+
+# ── relay ─────────────────────────────────────────────────────────────────────
+# Fly.io, not the NAS — different target, different credentials, its own
+# .deploy.env under relay/. Kept as a separate script; dispatched from here so
+# there is still exactly one entry point per repo.
+do_relay() { exec ./relay/deploy.sh "$@"; }
+
+# ── check ─────────────────────────────────────────────────────────────────────
+do_check() {
+  nas_require_reachable
+  echo "══ containers ════════════════════════════════════════════════"
+  nas_ssh "cd '${NAS_APP_DIR}' && '${NAS_DOCKER_BIN}' compose ps --format 'table {{.Name}}\t{{.Status}}'"
+  echo
+  echo "══ CouchDB ═══════════════════════════════════════════════════"
+  # The worker is deliberately unprobeable: it listens on nothing. CouchDB is the
+  # one LAN-visible surface — and it runs with require_valid_user=true, so it
+  # answers 401 on every endpoint including /_up. A 401 IS the proof of life
+  # here; anything else means it isn't listening.
+  nas_probe "CouchDB" "http://${APP_LAN_IP_COUCHDB}:5984" "/_up" "2..|401" || {
+    echo "  ↳ Expected if you're off the LAN/VPN. Note the NAS host itself cannot"
+    echo "    reach its own macvlan children — probe from another machine, not by"
+    echo "    ssh-ing in and curling from there."
+  }
+}
+
+usage() {
+  cat >&2 <<'USAGE'
+Usage: ./deploy [verb] [--no-apply]
+
+  (none)   ship, then bring the stack up — the everyday command
+  ship     build the worker image, ship it and the compose file; containers untouched
+  apply    bring the stack up from what is already on the NAS
+  relay    deploy the Fly relay (see relay/deploy.sh)
+  check    what is running on the NAS, and is CouchDB answering
+
+  --no-apply   stop after ship (with no verb, or with `up`)
+
+Real values live in the git-ignored .deploy.env — see deploy.env.example.
+USAGE
+  exit 1
+}
+
+VERB=""
+ARGS=()
+while [ $# -gt 0 ]; do
+  if nas_global_flag "$1"; then :
+  elif [ -z "$VERB" ]; then VERB="$1"
+  else ARGS+=("$1")
+  fi
+  shift
+done
+
+case "${VERB:-up}" in
+  ship)  do_ship ;;
+  apply) do_apply ;;
+  up)    do_ship
+         # `$NO_APPLY && ...` would be an AND-list returning 1 in the common
+         # case, which `set -e` treats as a failure and exits on. Use an if.
+         if $NO_APPLY; then echo; echo "--no-apply: stack not restarted."; else do_apply; fi ;;
+  relay) do_relay ${ARGS[@]+"${ARGS[@]}"} ;;
+  check) do_check ;;
+  help|-h|--help) usage ;;
+  *) echo "✗ Unknown verb: ${VERB}" >&2; usage ;;
+esac

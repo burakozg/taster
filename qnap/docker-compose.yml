@@ -31,7 +31,7 @@
 # presence at all — it only ever dials out (Fly relay via the bridge's
 # NAT, couchdb via the bridge).
 #
-# Static IP: CouchDB's qnet address comes from TASTER_COUCHDB_LAN_IP, read
+# Static IP: CouchDB's qnet address comes from APP_LAN_IP_COUCHDB, read
 # from /share/Container/taster/.env (the same file the worker's env_file
 # below points at — Compose auto-loads .env from the compose file's own
 # directory for ${...} substitution, no separate file needed). Falls back
@@ -40,6 +40,12 @@
 # `docker network inspect qnet-static-eth1-dc7e3a` over SSH) before
 # applying this file — if it collides with another Application on the same
 # qnet network, pick a different one.
+#
+# TASTER_COUCHDB_LAN_IP is still accepted as a second fallback: this variable
+# was renamed to match the other three projects (see homelab/README.md), but the
+# .env it is read from lives only on the NAS and is git-ignored, so nothing here
+# could rename it there. Either spelling works; drop the old one once the NAS's
+# .env has been updated by hand.
 
 # `version:` is obsolete in Compose v2 (v2.29.1-qnap2 warns and ignores it)
 # but kept for consistency with the sibling Container Station Applications
@@ -76,6 +82,27 @@ services:
       # Bind-mounted, not a named volume — this is the actual vault data,
       # and needs to be somewhere QNAP's folder-based backup jobs can see.
       - /share/Container/taster/couchdb/data:/opt/couchdb/data
+      # local.d, bind-mounted — and this is not optional. CouchDB's runtime
+      # configuration (the CORS settings Obsidian LiveSync requires, and
+      # require_valid_user) lived ONLY in the container's writable layer before
+      # this mount existed, because the config API writes to
+      # /opt/couchdb/etc/local.ini. Recreating the container erased them, and the
+      # failure was thoroughly disguised: clients reported "Failed to fetch by
+      # API. 201" — a SUCCESS code — while the real cause was visible only in the
+      # server log as OPTIONS preflight returning 401. Preflight carries no
+      # credentials by design, so without enable_cors CouchDB answers it 401 and
+      # the client's real request never happens.
+      #
+      # 10-obsidian-livesync.ini in this directory holds those settings. With
+      # this mount in place, Fauxton and config-API writes persist as well —
+      # CouchDB writes them to the last file in its ini chain, docker.ini, which
+      # is now in this bind-mounted directory (its own [couchdb] uuid is there,
+      # which is how you can tell). Prefer the .ini file anyway: it records why.
+      #
+      # The entrypoint also writes docker.ini here (the hashed admin password
+      # from couchdb.env), which is why the directory must be writable by the
+      # container.
+      - /share/Container/taster/couchdb/config:/opt/couchdb/etc/local.d
     # No read_only/tmpfs hardening here, unlike the worker below — CouchDB
     # writes internal config/state under /opt/couchdb beyond just the data
     # dir (exact paths aren't nailed down), and getting that wrong breaks
@@ -102,7 +129,18 @@ services:
       # macvlan setup (find yours with `docker network ls`) — pick any free
       # address on your LAN's subnet.
       qnet-static-eth1-dc7e3a:
-        ipv4_address: ${TASTER_COUCHDB_LAN_IP:-10.0.0.2}
+        ipv4_address: ${APP_LAN_IP_COUCHDB:-${TASTER_COUCHDB_LAN_IP:-10.0.0.2}}
+        # Pinned PER NETWORK — couchdb is on two, and a service-level
+        # `mac_address:` would apply to only one of them (it landed on the wrong
+        # interface when tried that way on the podcast agent).
+        #
+        # Why pin: docker randomises the MAC on every `create`, and the router
+        # keeps answering for the old one afterwards. CouchDB comes back healthy
+        # and unreachable inbound for minutes — and the LiveSync clients on the
+        # LAN are precisely what this address exists for. Filled in by `./deploy`
+        # from APP_LAN_IP_COUCHDB; the value encodes the real address, so it is a
+        # placeholder here for the same reason the address itself is.
+        mac_address: APP_MAC_COUCHDB_PLACEHOLDER
       # bridge: where the worker reaches it (as http://taster-couchdb:5984).
       taster-internal:
 
@@ -139,7 +177,7 @@ services:
       # only network destination it ever initiates a connection to besides
       # CouchDB. config.yaml (model/effort/token settings) is baked into
       # the image rather than bind-mounted — changing it means rebuilding
-      # and re-transferring the image (see ../qnap/deploy.sh), not just
+      # and re-transferring the image (see ../deploy), not just
       # editing a file and restarting.
       - /share/Container/taster/.env
     environment:

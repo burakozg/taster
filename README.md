@@ -55,7 +55,8 @@ qnap/                  The real QNAP deployment — Container Station app config
   docker-compose.yml     couchdb + worker, both under
                          /share/Container/taster/ — worker has NO build:
                          here; it's an image loaded via `docker load`
-  deploy.sh              builds the worker for the NAS's CPU architecture
+  docker-compose.yml     (shipped to the NAS by ./deploy — never edit it there)
+../deploy              builds the worker for the NAS's CPU architecture
                          on your Mac, streams it straight into `docker
                          load` over a single SSH pipe (no rsync or scp —
                          neither works on this NAS's SSH setup), restarts
@@ -89,13 +90,13 @@ fly deploy && cd ..
 # Determine the NAS's CPU architecture once (don't guess — an image built
 # for the wrong one fails outright, "exec format error"). Confirmed for
 # this NAS: x86_64 -> linux/amd64.
-export NAS_HOST=admin@nas.local NAS_PLATFORM=linux/amd64
+cp deploy.env.example .deploy.env   # then set NAS_SSH / NAS_PLATFORM in it
 
 # Build the worker for that architecture and stream it straight into
 # `docker load` on the NAS over a single SSH pipe (no rsync, no scp —
 # neither works on this NAS's SSH setup) — see INSTALL.md for the
 # one-time compose-file + secrets setup this depends on first.
-./qnap/deploy.sh
+./deploy
 ```
 
 ## Status
@@ -127,7 +128,7 @@ export NAS_HOST=admin@nas.local NAS_PLATFORM=linux/amd64
 - **Deploy split to remember**: the relay carries the PWA + all job-broker
   endpoints (`fly deploy`); the worker carries the schema, the category
   registry, prompts, and all the CouchDB/Claude work (rebuild the image via
-  `./qnap/deploy.sh`). A backend change (new field, new category, prompt tweak)
+  `./deploy`). A backend change (new field, new category, prompt tweak)
   needs the **worker** redeployed; a PWA or endpoint change needs the **relay**
   redeployed. Both bake in their config/code at build time, so neither is a
   live edit-in-place.

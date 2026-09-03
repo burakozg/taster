@@ -8,7 +8,7 @@ for the full walkthrough. Short version:
 
 1. On your Mac: build the worker image **for the NAS's actual CPU
    architecture** (not your Mac's — confirmed `linux/amd64` for this NAS)
-   and stream it onto the NAS — one command via `./deploy.sh`, or manually
+   and stream it onto the NAS — one command via `./deploy`, or manually
    (see its header comment). No source code, `build:` context, rsync, or
    scp involved (none of those work against this NAS's SSH setup) — just
    `docker save | gzip | ssh -p 44 nas "gunzip -c | <docker path> load"`,
@@ -33,7 +33,7 @@ for the full walkthrough. Short version:
 **On `docker`'s path and Compose:** Container Station only puts `docker` on
 `PATH` for interactive logins, not for `ssh host "command"` — every remote
 command needs its absolute path (`/share/CACHEDEV1_DATA/.qpkg/container-station/bin/docker`
-on this NAS; `deploy.sh` defaults to it, override with `NAS_DOCKER_BIN` if
+on this NAS; `./deploy` defaults to it, override with `NAS_DOCKER_BIN` in .deploy.env if
 yours differs). This NAS also has no standalone `docker-compose` binary —
 only `docker compose` (space) as a v2 plugin subcommand, confirmed via
 `docker compose version` → `v2.29.1-qnap2`.
@@ -44,9 +44,11 @@ so QNAP's backup tools can see it, not a Docker-managed volume), and
 `taster-worker` (waits for CouchDB's healthcheck before starting, since
 both come up together on first boot).
 
-`deploy.sh` is the repeatable path for worker code changes — rerun it any
-time `backend/` changes; it rebuilds, re-streams, and restarts the
-Application.
+`./deploy` (at the repo root) is the repeatable path for worker code
+changes — rerun it any time `backend/` changes; it rebuilds, re-streams,
+pushes this directory's `docker-compose.yml`, and restarts the Application.
+`./deploy ship` does everything except the restart. See homelab/README.md
+for the verb contract all four NAS projects share.
 
 The relay itself (`../relay/`) doesn't deploy through this directory at
 all — it's a separate Fly.io app; see `../INSTALL.md`.

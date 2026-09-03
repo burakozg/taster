@@ -2,8 +2,8 @@
 .env
 .env.*
 !.env.example
-.deploy.env
-relay/.deploy.env
+.deploy.env*
+relay/.deploy.env*
 relay/deploy-out/
 
 # Python
@@ -32,3 +32,6 @@ data/
 
 # Local Claude Code settings
 .claude/settings.local.json
+
+# Rendered compose (real IP/MAC) — see deploy.env.example
+deploy-out/
