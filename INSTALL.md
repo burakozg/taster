@@ -419,7 +419,8 @@ CouchDB, so the dump lands off the NAS from the start — see
 `homelab/README.md`'s "Backing up the vault" for the full story). Since
 2026-09-02 that means the `hobby` database specifically (`VAULT_DB=hobby`,
 its own scheduled LaunchAgent) — taster's data moved out of the shared
-`tastings` database that run, see "The vault split" in `homelab/README.md`.
+`the_brain` database (called `tastings` until 2026-09-04) that run, see "The
+vault split" in `homelab/README.md`.
 This QNAP
 bind-mount path is still worth covering by a NAS-side backup job too if one
 already exists for other reasons, but it is no longer the only copy.

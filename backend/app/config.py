@@ -83,7 +83,7 @@ class Settings(BaseModel):
     # `vendor/model` id, which routes through OpenRouter.
     openrouter_api_key: str | None = None
     couchdb_url: str = "http://taster-couchdb:5984"
-    couchdb_db: str = "tastings"
+    couchdb_db: str = "hobby"
     couchdb_user: str
     couchdb_password: str
 
@@ -123,7 +123,7 @@ def get_settings() -> Settings:
         mistral_api_key=os.environ.get("MISTRAL_API_KEY"),
         openrouter_api_key=os.environ.get("OPENROUTER_API_KEY"),
         couchdb_url=os.environ.get("COUCHDB_URL", "http://taster-couchdb:5984"),
-        couchdb_db=os.environ.get("COUCHDB_DB", "tastings"),
+        couchdb_db=os.environ.get("COUCHDB_DB", "hobby"),
         couchdb_user=os.environ["COUCHDB_USER"],
         couchdb_password=os.environ["COUCHDB_PASSWORD"],
         relay_url=os.environ["RELAY_URL"],
