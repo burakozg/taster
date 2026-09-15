@@ -1,5 +1,5 @@
 """Mistral provider path — used when the admin panel picks a mistral-*/pixtral-*
-model. Mirrors the Claude/OpenAI path's shape: one logical call with vision
+model. Mirrors the OpenRouter path's shape: one logical call with vision
 (photo captures), web search, the query_notes function tool, and a
 JSON-schema-nudged output that schema.py's Pydantic layer then enforces.
 
@@ -41,11 +41,11 @@ logger = logging.getLogger(__name__)
 def is_mistral_model(model: str) -> bool:
     # `ministral-*` (Ministral 3) is NOT a typo for `mistral-*` — it's a
     # separate family on the same API, and it does not match the `mistral-`
-    # prefix. Missing it here routes Ministral ids into the Claude branch.
-    # `pixtral-*` is retired and gone from the relay's catalog, but stays
-    # matched on purpose: a stale stored override should reach this provider
-    # and fail with Mistral's own `invalid_model` 400, not surface as a
-    # baffling Anthropic 404.
+    # prefix. Missing it here routes Ministral ids to provider_for's "no
+    # provider matched" branch. `pixtral-*` is retired and gone from the
+    # relay's catalog, but stays matched on purpose: a stale stored override
+    # should reach this provider and fail with Mistral's own `invalid_model`
+    # 400, not a baffling "no provider matched" error somewhere else.
     return model.startswith(("mistral-", "ministral-", "pixtral-"))
 
 
@@ -59,7 +59,7 @@ def get_mistral_client(settings: Settings):
             raise RuntimeError(
                 "a Mistral model is selected in the admin panel but MISTRAL_API_KEY "
                 "is not set in the worker's .env — add it (and recreate the worker) "
-                "or switch back to a Claude model"
+                "or switch to an OpenRouter model"
             )
         try:
             # mistralai 2.x moved the client into the `mistralai.client`
@@ -74,7 +74,7 @@ def get_mistral_client(settings: Settings):
                 "the Mistral SDK isn't importable in this worker build "
                 f"({type(e).__name__}: {e}) — expected mistralai>=2.0 exposing "
                 "`mistralai.client.Mistral`; rebuild the worker "
-                "(./deploy), or switch the model back to a Claude/OpenAI "
+                "(./deploy), or switch the model to an OpenRouter "
                 "one in Admin → Models"
             ) from e
 
@@ -283,7 +283,7 @@ async def _run_chat_loop(
         # finish_reason "length" (getattr-guarded — the Conversations surface
         # above doesn't carry the field). Capture needs complete JSON so it
         # fails; lookup keeps the partial answer with a marker, matching what
-        # the Claude lookup path does.
+        # the OpenRouter lookup path does.
         if getattr(choice, "finish_reason", None) == "length":
             logger.warning(
                 "mistral %s truncated job_id=%s at max_tokens=%d", site, job_id, max_tokens,
@@ -324,7 +324,7 @@ async def _run_chat_loop(
 
 
 # --------------------------------------------------------------------------
-# Public API (same signatures as openai_provider)
+# Public API (same signatures as openrouter_provider)
 # --------------------------------------------------------------------------
 
 async def extract_structured(
@@ -341,10 +341,17 @@ async def extract_structured(
     output_schema: dict,
     site: str = "capture",
     max_output_tokens: int | None = None,
+    web_search_max_uses: int | None = None,  # noqa: ARG001 — see below
 ) -> dict:
     """Capture/manage path: returns the raw structured dict (validated by caller).
     Tries the Conversations API (web search) when requested, falling back to
-    chat completions (no web search) on any Conversations-API problem."""
+    chat completions (no web search) on any Conversations-API problem.
+
+    `web_search_max_uses` is accepted only for signature parity with
+    openrouter_provider.extract_structured (manage_service.py calls whichever
+    provider was resolved without knowing which one it got) — Mistral's
+    `web_search` connector tool takes no per-call result cap, so there is
+    nothing here to apply it to."""
     cfg = settings.models.claude
     client = get_mistral_client(settings)
     max_tokens = max_output_tokens or cfg.max_tokens_capture

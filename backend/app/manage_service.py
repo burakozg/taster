@@ -3,7 +3,7 @@ instruction, behind a mandatory plan → approve → apply flow.
 
 Two phases, two job types (see worker.py dispatch):
 
-- **plan** (`run_manage_plan`) — Claude reads the whole vault (a compact
+- **plan** (`run_manage_plan`) — the model reads the whole vault (a compact
   projection + `query_notes` for detail + `web_search` for facts like a
   country of origin) and returns a *proposed* list of per-record edits. It
   writes NOTHING. The instruction can be anything: "give every whisky a
@@ -24,23 +24,17 @@ from __future__ import annotations
 
 import json
 import logging
-import time
 import uuid
 from typing import Any
 
-import anthropic
-
-from app import usage
 from app.categories import CATEGORIES, NOTE_TYPES
-from app.claude_client import count_web_searches, get_claude_client, log_call_error, log_call_summary
 from app.config import Settings
 from app.couchdb_client import CouchDBClient
 from app.items_query import query_all_items
 from app.markdown import render_markdown
-from app.model_output import ModelOutputError, loads_model_json, no_text_output, refused
+from app.model_output import ModelOutputError
 from app.providers import provider_for
 from app.schema import parse_any_note
-from app.tools import QUERY_NOTES_TOOL, query_notes_impl
 
 logger = logging.getLogger("worker.manage")
 
@@ -352,26 +346,23 @@ async def run_repair_pairings_plan(
             f"{json.dumps(_repair_compact(targets))}"
         )
         batch_id = f"{manage_id}#b{batch_no}"
-        if (provider := provider_for(model)) is not None:
-            data = await provider.extract_structured(
-                settings, db,
-                job_id=batch_id, model=model,
-                system_prompt=REPAIR_SYSTEM_PROMPT, text=prompt,
-                image_b64=None, image_media_type=None,
-                use_web_search=True, output_schema=REPAIR_PAIRINGS_SCHEMA,
-                site="repair", max_output_tokens=claude_cfg.max_tokens_manage,
+        provider = provider_for(model)
+        if provider is None:
+            raise ManageFailed(
+                f"{model!r} is not a recognised OpenRouter or Mistral model id "
+                f"— pick a model in Admin → Models, or fix image_model/"
+                f"text_model in config.yaml"
             )
-        else:
-            client = get_claude_client(settings)
-            tools: list[dict[str, Any]] = [
-                QUERY_NOTES_TOOL,
-                {"type": "web_search_20260209", "name": "web_search", "max_uses": claude_cfg.web_search_max_uses},
-            ]
-            messages: list[dict[str, Any]] = [{"role": "user", "content": [{"type": "text", "text": prompt}]}]
-            data = await _run_plan_loop(
-                client, claude_cfg, model, tools, messages, db, manage_id=batch_id,
-                system=REPAIR_SYSTEM_PROMPT, output_schema=REPAIR_PAIRINGS_SCHEMA, site="repair",
-            )
+        data = await provider.extract_structured(
+            settings, db,
+            job_id=batch_id, model=model,
+            system_prompt=REPAIR_SYSTEM_PROMPT, text=prompt,
+            image_b64=None, image_media_type=None,
+            use_web_search=True, output_schema=REPAIR_PAIRINGS_SCHEMA,
+            site="repair", max_output_tokens=claude_cfg.max_tokens_manage,
+            # Researches per-item, same rationale as run_manage_plan below.
+            web_search_max_uses=claude_cfg.web_search_max_uses_manage,
+        )
         return data.get("changes") or []
 
     size = max(1, claude_cfg.repair_batch_size)
@@ -413,135 +404,37 @@ async def run_manage_plan(
         f"Current records ({len(records)}):\n{json.dumps(_compact(records))}"
     )
 
-    if (provider := provider_for(model)) is not None:
-        data = await provider.extract_structured(
-            settings, db,
-            job_id=manage_id,
-            model=model,
-            system_prompt=SYSTEM_PROMPT,
-            text=prompt,
-            image_b64=None,
-            image_media_type=None,
-            use_web_search=True,
-            output_schema=MANAGE_PLAN_SCHEMA,
-            site="manage",
-            max_output_tokens=claude_cfg.max_tokens_manage,
+    provider = provider_for(model)
+    if provider is None:
+        raise ManageFailed(
+            f"{model!r} is not a recognised OpenRouter or Mistral model id "
+            f"— pick a model in Admin → Models, or fix image_model/text_model "
+            f"in config.yaml"
         )
-    else:
-        client = get_claude_client(settings)
-        tools: list[dict[str, Any]] = [
-            QUERY_NOTES_TOOL,
-            # A maintenance plan researches ONE FACT PER RECORD ("give every
-            # whisky its ABV"), so the per-capture budget of 3 is the wrong
-            # scale here — it caps the plan at three researched records however
-            # many need one, and the planner fills the rest with intentions
-            # instead of values. See web_search_max_uses_manage.
-            {"type": "web_search_20260209", "name": "web_search",
-             "max_uses": claude_cfg.web_search_max_uses_manage},
-        ]
-        messages: list[dict[str, Any]] = [{"role": "user", "content": [{"type": "text", "text": prompt}]}]
-        data = await _run_plan_loop(client, claude_cfg, model, tools, messages, db, manage_id=manage_id)
+    data = await provider.extract_structured(
+        settings, db,
+        job_id=manage_id,
+        model=model,
+        system_prompt=SYSTEM_PROMPT,
+        text=prompt,
+        image_b64=None,
+        image_media_type=None,
+        use_web_search=True,
+        output_schema=MANAGE_PLAN_SCHEMA,
+        site="manage",
+        max_output_tokens=claude_cfg.max_tokens_manage,
+        # A maintenance plan researches ONE FACT PER RECORD ("give every
+        # whisky its ABV"), so the per-capture budget is the wrong scale here
+        # — it would cap the plan at a few researched records however many
+        # need one, and the planner would fill the rest with intentions
+        # instead of values (rejected on apply — see MANAGE_PLAN_SCHEMA).
+        web_search_max_uses=claude_cfg.web_search_max_uses_manage,
+    )
 
     changes = data.get("changes") or []
     logger.info("manage plan %s: %d proposed change(s)", manage_id, len(changes))
     # Shape the relay/PWA sees. `applied=False` until an apply job runs.
     return {"summary": data.get("summary", ""), "changes": changes}
-
-
-async def _run_plan_loop(client, claude_cfg, model, tools, messages, db, *, manage_id,
-                         system=SYSTEM_PROMPT, output_schema=MANAGE_PLAN_SCHEMA, site="manage"):
-    web_search = any("web_search" in str(t.get("type", "")) for t in tools)
-    iterations = query_notes_calls = input_tokens = output_tokens = web_searches = 0
-    stop_reason: str | None = None
-    # See capture_service._run_extraction_loop: web_search_20260209 runs code
-    # server-side to filter results, and the container it provisions must be
-    # named on every subsequent turn of the conversation.
-    container_id: str | None = None
-    started = time.monotonic()
-    summary_logged = False
-
-    def emit_summary() -> None:
-        nonlocal summary_logged
-        if summary_logged:
-            return
-        summary_logged = True
-        log_call_summary(
-            job_id=manage_id, site=site, model=model, stop_reason=stop_reason,
-            input_tokens=input_tokens, output_tokens=output_tokens, iterations=iterations,
-            query_notes=query_notes_calls, web_search=web_search,
-            web_searches=web_searches, duration_s=time.monotonic() - started,
-        )
-
-    for _ in range(claude_cfg.max_tool_iterations):
-        iterations += 1
-        try:
-            response = await client.messages.create(
-                model=model,
-                max_tokens=claude_cfg.max_tokens_manage,
-                thinking={"type": "adaptive"},
-                output_config={
-                    "effort": claude_cfg.effort,
-                    "format": {"type": "json_schema", "schema": output_schema},
-                },
-                system=system,
-                tools=tools,
-                messages=messages,
-                **({"container": container_id} if container_id else {}),
-            )
-        except anthropic.APIError as e:
-            log_call_error(job_id=manage_id, site=site, model=model, exc=e)
-            raise
-        input_tokens += response.usage.input_tokens
-        output_tokens += response.usage.output_tokens
-        usage.record("anthropic", model, response.usage.input_tokens, response.usage.output_tokens)
-        stop_reason = response.stop_reason
-        web_searches += count_web_searches(response.content, manage_id, site)
-        if response.container is not None:
-            container_id = response.container.id
-
-        if response.stop_reason == "refusal":
-            logger.warning("manage plan %s claude refusal", manage_id)
-            emit_summary()
-            detail = getattr(getattr(response, "stop_details", None), "category", None)
-            raise refused("anthropic", detail)
-
-        if response.stop_reason == "max_tokens":
-            logger.warning("manage plan %s hit max_tokens (plan too large)", manage_id)
-            emit_summary()
-            raise ManageFailed(
-                "the plan was too large for one response (hit the output token limit) — "
-                "narrow the instruction (e.g. one item type at a time) or raise "
-                "max_tokens_manage in config.yaml"
-            )
-
-        if response.stop_reason == "tool_use":
-            messages.append({"role": "assistant", "content": response.content})
-            tool_results = []
-            for block in response.content:
-                if block.type == "tool_use" and block.name == "query_notes":
-                    query_notes_calls += 1
-                    result = await query_notes_impl(db, block.input)
-                    tool_results.append({
-                        "type": "tool_result",
-                        "tool_use_id": block.id,
-                        "content": json.dumps(result),
-                    })
-            messages.append({"role": "user", "content": tool_results})
-            continue
-
-        if response.stop_reason == "pause_turn":
-            logger.warning("manage plan %s claude pause_turn resume (iteration %d)", manage_id, iterations)
-            messages.append({"role": "assistant", "content": response.content})
-            continue
-
-        emit_summary()
-        text_block = next((b for b in response.content if b.type == "text"), None)
-        if text_block is None:
-            raise no_text_output("anthropic")
-        return loads_model_json(text_block.text, "anthropic")
-
-    emit_summary()
-    raise ManageFailed("exceeded max tool-use iterations without a plan")
 
 
 class ManageFailed(ModelOutputError):

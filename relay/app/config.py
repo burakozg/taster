@@ -1,5 +1,5 @@
 """Relay settings — all secrets, no model config here (that lives in
-backend/config.yaml since the relay never talks to Claude directly)."""
+backend/config.yaml since the relay never talks to a model provider directly)."""
 from __future__ import annotations
 
 import os

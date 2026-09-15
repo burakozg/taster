@@ -1,9 +1,9 @@
 """The curated model list the admin panel offers — single source of truth.
 
-Only models that support the capture feature set (vision + tool calling +
-structured JSON output) are listed. Claude Haiku is deliberately absent: it has
-a different API surface (no adaptive thinking/effort, older web-search tool
-variant) that isn't worth the conditionals when the budget slots are covered.
+Only open-weight models via OpenRouter, plus Mistral's own directly-reached
+family, are listed — no Anthropic or OpenAI direct-API path exists in this app
+at all. Only models that support the capture feature set (vision + tool
+calling + structured JSON output) are listed.
 
 `cost` is a shopping hint (€ = cheapest … €€€€ = priciest), not a bill. It is
 derived, not eyeballed — assign it from this blend so the column stays
@@ -16,21 +16,17 @@ Input-weighted 4:1 because that is this app's shape: a large system prompt
 one small JSON note comes out. Bands: € < 1, €€ 1-4, €€€ 4-7, €€€€ > 7.
 List prices checked 2026-07-28 ($/MTok in/out -> blended):
 
-    Claude Opus 4.8       5    / 25    -> 9.00   €€€€
-    Claude Sonnet 5       3    / 15    -> 5.40   €€€
-    GPT-5.1               1.25 / 10    -> 3.00   €€
     Grok 4.5              2    /  6    -> 2.80   €€
     Mistral Medium 3.5    1.5  /  7.5  -> 2.70   €€
     Gemini 3.6 Flash      1.5  /  7.5  -> 2.70   €€
     Kimi K2.6             0.589/  2.48 -> 0.97   €
     DeepSeek V4 Pro       0.397/  0.794-> 0.48   €
     Mistral Large 3       0.5  /  1.5  -> 0.70   €
-    GPT-5 mini            0.25 /  2    -> 0.60   €
     Qwen3 VL 235B         0.21 /  1.9  -> 0.55   €
     Mistral Small 4       0.15 /  0.6  -> 0.24   €
     Ministral 3 14B       0.2  /  0.2  -> 0.20   €
 
-The four OpenRouter rows are its pass-through token prices, checked live
+The OpenRouter rows are its pass-through token prices, checked live
 2026-08-04 (see the curl below). They exclude two OpenRouter-specific costs the
 € column can't express: the ~5.5% fee on credit top-ups, and web search, which
 is billed per result rather than per token (the `web` plugin's Exa engine, or
@@ -39,29 +35,26 @@ $0.014/search for Gemini, $0.005 for Grok). With web_search_max_uses at 3 that
 is cents per capture, not a band change, but it is why a cheap OpenRouter model
 is not as cheap as its row suggests.
 
-Two traps this table exists to prevent. Mistral Large 3 is *cheaper* than
+The trap this table exists to prevent: Mistral Large 3 is *cheaper* than
 Mistral Medium 3.5 (0.70 vs 2.70) — the size word in a model name says nothing
 about its price, and this entry was previously mis-tiered at €€€ on that
-assumption. And Sonnet 5 is banded on its standard $3/$15; its $2/$10
-introductory rate (through 2026-08-31) would blend to 3.60 and flip it to €€,
-which is not worth churning the column over.
+assumption.
 
 The relay never calls any of these models itself — this list only feeds the
 admin dropdowns and validates PUT /admin/settings. The worker decides the
-provider from the id (claude-* → Anthropic, gpt-* → OpenAI, mistral-*/pixtral-*
-→ Mistral, and anything namespaced `vendor/model` → OpenRouter; see the worker's
-providers.py). Each alternate needs its own key in the worker's .env:
-OPENAI_API_KEY, MISTRAL_API_KEY, OPENROUTER_API_KEY. The Mistral path gets web
-search via Mistral's Agents/Conversations API, with an automatic fall back to
-its chat API (no web search) if that call fails — see mistral_provider.py; the
-OpenRouter path gets it from OpenRouter's server-side `web` plugin.
+provider from the id (mistral-*/ministral-*/pixtral-* → Mistral, and anything
+namespaced `vendor/model` → OpenRouter; see the worker's providers.py). Each
+needs its own key in the worker's .env: MISTRAL_API_KEY, OPENROUTER_API_KEY.
+The Mistral path gets web search via Mistral's Agents/Conversations API, with
+an automatic fall back to its chat API (no web search) if that call fails —
+see mistral_provider.py; the OpenRouter path gets it from OpenRouter's
+server-side `web` plugin.
 
-OpenRouter is the one entry point here that is a router rather than a lab, and
-it earns its slots by reaching families the other three can't: Google, xAI,
-Moonshot, Qwen. Models already covered by a direct path are deliberately NOT
-listed through it — `openai/gpt-5.1` and `anthropic/claude-opus-4-8` exist on
-OpenRouter, but routing them there would only add a hop and a fee over the
-direct entries above.
+OpenRouter earns its slots by reaching families no direct API in this app
+covers: Google, xAI, Moonshot, Qwen, DeepSeek. Models with their own direct
+path (Mistral) are deliberately NOT ALSO listed through OpenRouter —
+`mistralai/mistral-large-2512` exists there too, but routing it through the
+router would only add a hop and a fee over the direct entry above.
 
 VERIFY IDS AND CAPABILITIES AGAINST THE LIVE API, NOT THE DOCS. Every wrong id
 this file has shipped came from reading a documentation page: `pixtral-large-
@@ -107,16 +100,12 @@ something).
 # Ordered priciest -> cheapest by the blend above, so the € column reads as a
 # sorted ladder in the Admin dropdown instead of grouping by provider.
 MODEL_CATALOG: list[dict] = [
-    {"id": "claude-opus-4-8", "label": "Claude Opus 4.8", "provider": "anthropic", "cost": "€€€€"},
-    {"id": "claude-sonnet-5", "label": "Claude Sonnet 5", "provider": "anthropic", "cost": "€€€"},
-    {"id": "gpt-5.1", "label": "GPT-5.1", "provider": "openai", "cost": "€€"},
     {"id": "x-ai/grok-4.5", "label": "Grok 4.5", "provider": "openrouter", "cost": "€€"},
     {"id": "mistral-medium-latest", "label": "Mistral Medium 3.5", "provider": "mistral", "cost": "€€"},
     {"id": "google/gemini-3.6-flash", "label": "Gemini 3.6 Flash", "provider": "openrouter", "cost": "€€"},
     {"id": "moonshotai/kimi-k2.6", "label": "Kimi K2.6", "provider": "openrouter", "cost": "€"},
     {"id": "deepseek/deepseek-v4-pro", "label": "DeepSeek V4 Pro", "provider": "openrouter", "cost": "€"},
     {"id": "mistral-large-latest", "label": "Mistral Large 3", "provider": "mistral", "cost": "€"},
-    {"id": "gpt-5-mini", "label": "GPT-5 mini", "provider": "openai", "cost": "€"},
     {"id": "qwen/qwen3-vl-235b-a22b-instruct", "label": "Qwen3 VL 235B", "provider": "openrouter", "cost": "€"},
     {"id": "mistral-small-latest", "label": "Mistral Small 4", "provider": "mistral", "cost": "€"},
     {"id": "ministral-14b-latest", "label": "Ministral 3 14B", "provider": "mistral", "cost": "€"},

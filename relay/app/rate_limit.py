@@ -15,7 +15,7 @@ logger = logging.getLogger("relay.ratelimit")
 _hits: dict[str, deque[float]] = defaultdict(deque)
 # Sized so one legitimate client can't trip it: the PWA polls a job every
 # 2s (up to ~30 GETs/min) plus the enqueue itself and any items refreshes.
-# Claude spend is bounded separately by max_uses/max_tokens per call, so
+# Model spend is bounded separately by max_uses/max_tokens per call, so
 # this only needs to stop hammering, not meter usage tightly.
 _LIMIT_PER_MINUTE = 60
 

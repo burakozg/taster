@@ -8,7 +8,7 @@ deliberately two-step so nothing is written without human approval:
   POST /manage/apply     {changes:[...]}     -> enqueues a `manage_apply` job
   GET  /manage/{id}                          -> poll; returns the apply summary
 
-The worker does the actual Claude/CouchDB work (see manage_service.py); the
+The worker does the actual model/CouchDB work (see manage_service.py); the
 relay only brokers the jobs, exactly like capture/lookup.
 """
 from __future__ import annotations

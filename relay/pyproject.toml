@@ -1,0 +1,18 @@
+[project]
+name = "taster-relay"
+version = "0.1.0"
+description = "Tasting-log relay: public-facing FastAPI service fronting CouchDB for the PWA and worker"
+requires-python = ">=3.12,<3.13"
+license = { text = "MIT" }
+
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.30",
+    "pydantic>=2.8",
+    "python-multipart>=0.0.9",
+]
+
+# This service is run in place (`uvicorn app.main:app`), not distributed as an
+# installable package — no build-system / wheel packaging needed.
+[tool.uv]
+package = false

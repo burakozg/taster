@@ -24,21 +24,28 @@ CONFIG_YAML_PATH = Path(os.environ.get("TASTER_CONFIG_PATH", Path(__file__).pare
 
 class ClaudeConfig(BaseModel):
     """Despite the name, every provider module reads its budgets/effort/etc.
-    from this one block (`settings.models.claude`) — OpenAI, Mistral, and
-    OpenRouter included. It predates those three; renaming the YAML key and
-    every `settings.models.claude` call site is a bigger refactor than the
-    naming confusion currently costs, but see model_output.truncated() for a
+    from this one block (`settings.models.claude`) — Mistral and OpenRouter
+    included. It predates both (and predates dropping the Anthropic/OpenAI
+    direct-API paths entirely); renaming the YAML key and every
+    `settings.models.claude` call site is a bigger refactor than the naming
+    confusion currently costs, but see model_output.truncated() for a
     user-facing message that used to read as Claude-specific when it wasn't."""
 
     # Two models, split on the one axis that matters: does the job carry an
     # image (see worker.process_job's model_for). This replaced a per-surface
     # capture_model/lookup_model pair — both of those meant "the model for a
     # photo job", so they were one setting wearing two labels.
-    image_model: str = "claude-opus-4-8"
+    #
+    # Both defaults are OpenRouter ids (the `vendor/model` slash is what
+    # routes them there — see providers.py) since this app runs entirely on
+    # open-weight models now. Qwen3 VL for image_model because it's the
+    # vision-capable entry in the catalog; swap to a different `vendor/model`
+    # id, or a mistral-*/ministral-* one, in config.yaml if you prefer.
+    image_model: str = "qwen/qwen3-vl-235b-a22b-instruct"
     # Everything without an image — chat captures, plain lookups, maintenance
     # plans, regenerate-pairings. These are reasoning/tool/JSON jobs, and a
     # vision-tuned model is the wrong instrument for all of them.
-    text_model: str = "claude-opus-4-8"
+    text_model: str = "deepseek/deepseek-v4-pro"
     max_tokens_capture: int = 16384
     max_tokens_lookup: int = 2048
     # Bulk-maintenance plans emit one JSON object covering many records, and
@@ -56,14 +63,12 @@ class ClaudeConfig(BaseModel):
     # Separate, larger budget for the AI-maintenance PLAN, which researches one
     # fact per record rather than one product per call.
     web_search_max_uses_manage: int = 25
-    # Server-side web search on /lookup. Off historically — but only for Claude
-    # and OpenAI, because Mistral's Conversations surface bundles the connector
-    # and nobody parameterised it, so the same question searched on one provider
-    # and not the others. All three execute search server-side and all three
-    # require the tool to be declared per request; there is no implicit search.
-    # On by default: shop mode ("standing in front of a bottle") is exactly the
-    # case that needs facts the vault doesn't have. Set false to trade that for
-    # latency — lookup is the interactive path.
+    # Server-side web search on /lookup. Both remaining providers (OpenRouter's
+    # `web` plugin, Mistral's Conversations connector) execute search
+    # server-side and require the tool declared per request — there is no
+    # implicit search on either. On by default: shop mode ("standing in front
+    # of a bottle") is exactly the case that needs facts the vault doesn't
+    # have. Set false to trade that for latency — lookup is the interactive path.
     web_search_lookup: bool = True
     max_tool_iterations: int = 8
 
@@ -74,13 +79,14 @@ class ModelConfig(BaseModel):
 
 class Settings(BaseModel):
     # --- secrets / environment-only ---
-    anthropic_api_key: str | None = None
-    # Optional — only needed when the admin panel selects a gpt-* model.
-    openai_api_key: str | None = None
-    # Optional — only needed when the admin panel selects a mistral-*/pixtral-* model.
+    # Optional — only needed when the admin panel selects a mistral-*/ministral-*/
+    # pixtral-* model.
     mistral_api_key: str | None = None
-    # Optional — only needed when the admin panel selects a namespaced
-    # `vendor/model` id, which routes through OpenRouter.
+    # Required in practice — every default model id is a namespaced
+    # `vendor/model` OpenRouter id (see config.ClaudeConfig), so this is the
+    # key the app actually calls out with day to day. Left optional here
+    # rather than enforced at startup so an admin override to a Mistral model
+    # still works with only MISTRAL_API_KEY set.
     openrouter_api_key: str | None = None
     couchdb_url: str = "http://taster-couchdb:5984"
     couchdb_db: str = "hobby"
@@ -118,8 +124,6 @@ def _load_model_config() -> ModelConfig:
 @lru_cache
 def get_settings() -> Settings:
     return Settings(
-        anthropic_api_key=os.environ.get("ANTHROPIC_API_KEY"),
-        openai_api_key=os.environ.get("OPENAI_API_KEY"),
         mistral_api_key=os.environ.get("MISTRAL_API_KEY"),
         openrouter_api_key=os.environ.get("OPENROUTER_API_KEY"),
         couchdb_url=os.environ.get("COUCHDB_URL", "http://taster-couchdb:5984"),

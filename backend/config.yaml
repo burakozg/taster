@@ -5,18 +5,21 @@
 # job, so it wins over this file without a rebuild. This file is the
 # fallback when no admin override is set.
 #
-# Edit this file and restart the backend to change which Claude model(s)
-# power capture vs. lookup by default, without touching code or secrets. See
+# Edit this file and restart the backend to change which model(s) power
+# capture vs. lookup by default, without touching code or secrets. Every
+# model here is an open-weight model reached through OpenRouter (the
+# `vendor/model` slash is what routes it there — see providers.py) or,
+# for a mistral-*/ministral-* id, directly through Mistral's own API. See
 # tasting-log-design.md §"which model" discussion: capture is async and
-# quality-critical (default: Opus); lookup is interactive and can trade a
-# little quality for latency (default: also Opus for now — flip to a Sonnet
-# ID once you've measured real latency and are happy with lookup quality).
+# quality-critical; lookup is interactive and can trade a little quality
+# for latency.
 
 claude:
   # Model for every job that CARRIES AN IMAGE: photo captures and shop-mode
   # (photo) lookups. This is the only job shape that needs vision, so it is the
   # only one that should pay for a vision model.
-  image_model: claude-opus-4-8
+  # Needs OPENROUTER_API_KEY in the worker's .env (any `vendor/model` id does).
+  image_model: qwen/qwen3-vl-235b-a22b-instruct
 
   # Model for every job that carries NO image: chat captures, plain lookups,
   # maintenance plans and regenerate-pairings. Those are reasoning, tool-calling

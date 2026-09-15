@@ -1,10 +1,10 @@
-"""Capture: one Claude call (vision optional + web search + query_notes +
+"""Capture: one model call (vision optional + web search + query_notes +
 structured output), per tasting-log-design.md §4.2/§4.5.
 
 Note on §10's "failed enrichment" open question: merging vision+search+parse
 into a single call (rather than a serial vision-then-search pipeline) means
 there's no longer a clean "extraction succeeded, enrichment failed" split to
-fall back from — if web search comes up empty or errors internally, Claude
+fall back from — if web search comes up empty or errors internally, the model
 just leaves those fields blank in the same structured response (graceful
 degradation, not a Python exception). A capture only reaches `failed` here
 when there's truly nothing usable: an API/network error, a refusal, or a
@@ -16,26 +16,21 @@ from __future__ import annotations
 
 import json
 import logging
-import time
 import uuid
-from datetime import date, datetime, timezone
+from datetime import date
 from typing import Any, Literal
 
-import anthropic
 from pydantic import BaseModel, ValidationError
 
-from app import usage
 from app.capture_json_schema import CAPTURE_OUTPUT_SCHEMA
-from app.claude_client import count_web_searches, get_claude_client, log_call_error, log_call_summary
 from app.config import Settings
 from app.couchdb_client import CouchDBClient
 from app.errors import PhaseError, exc_label
 from app.markdown import render_markdown
-from app.model_output import ModelOutputError, loads_model_json, no_text_output, refused, truncated
+from app.model_output import ModelOutputError
 from app.providers import provider_for
 from app.schema import AnyNote, parse_any_note, slug_tokens
 from app.text_facts import extract_facts
-from app.tools import QUERY_NOTES_TOOL, query_notes_impl
 
 logger = logging.getLogger(__name__)
 
@@ -180,23 +175,6 @@ Respond only with the structured JSON. `source` must be "photo" or "chat" \
 matching how this capture arrived. If `date` isn't mentioned, use today.
 """
 
-# The Claude path cannot use output_config.format: CAPTURE_OUTPUT_SCHEMA has 47
-# optional properties and Anthropic's structured outputs cap grammar
-# compilation at 24 ("Schemas contains too many optional parameters"; 400
-# invalid_request_error). There is no `strict: false` escape hatch like the one
-# the OpenAI path uses, and 31 of those 47 are category-specific fields that
-# only ever apply to one note type, so the count can't come down without
-# splitting the schema per type. The schema goes into the prompt as text
-# instead — it still tells the model the exact field names, which the prose
-# above only partly covers — and schema.py's Pydantic layer remains the real
-# enforcement (same philosophy as capture_json_schema.py's header).
-CLAUDE_SYSTEM_PROMPT = SYSTEM_PROMPT + (
-    "\nYour reply must be a single JSON object conforming to this schema — no "
-    "markdown fences, no prose before or after it:\n"
-    + json.dumps(CAPTURE_OUTPUT_SCHEMA)
-)
-
-
 class CaptureResult(BaseModel):
     capture_id: str
     status: Literal["pending", "done", "failed"]
@@ -220,8 +198,8 @@ async def run_capture(
 ) -> CaptureResult:
     claude_cfg = settings.models.claude
     # Admin-panel choice (delivered per job by the relay) wins over the
-    # baked-in config.yaml default. Non-Claude ids route to an alternate
-    # provider module — see providers.py for the id → provider table.
+    # baked-in config.yaml default. providers.py maps the resolved id to its
+    # OpenRouter/Mistral provider module.
     model = model_override or claude_cfg.image_model
 
     # Read outright-stated facts from the user's text before the model sees it.
@@ -244,45 +222,32 @@ async def run_capture(
     prompt_text = "\n".join(prompt_parts)
 
     try:
-        if (provider := provider_for(model)) is not None:
-            data = await provider.extract_structured(
-                settings, db,
-                job_id=capture_id,
-                model=model,
-                system_prompt=SYSTEM_PROMPT,
-                text=prompt_text,
-                image_b64=image_b64,
-                image_media_type=image_media_type,
-                # Chat captures search too — common_notes wants vendor/review
-                # grounding, not just label-photo gap-filling. Every alternate
-                # provider honours the flag; Mistral is the one that may still
-                # end up without search, if its Conversations call falls back.
-                use_web_search=True,
-                output_schema=CAPTURE_OUTPUT_SCHEMA,
+        provider = provider_for(model)
+        if provider is None:
+            # Only reachable via a stale admin-panel override or a hand-edited
+            # config.yaml — the catalog only ever offers ids providers.py
+            # recognises. Fail clearly rather than dying inside a provider
+            # module that was never going to accept this id.
+            raise CaptureFailed(
+                f"{model!r} is not a recognised OpenRouter or Mistral model id "
+                f"— pick a model in Admin → Models, or fix image_model/"
+                f"text_model in config.yaml"
             )
-        else:
-            client = get_claude_client(settings)
-            user_content: list[dict[str, Any]] = []
-            if image_b64:
-                user_content.append({
-                    "type": "image",
-                    "source": {"type": "base64", "media_type": image_media_type or "image/jpeg", "data": image_b64},
-                })
-            user_content.append({"type": "text", "text": prompt_text})
-
-            # web search on every capture (not just photos) — common_notes
-            # wants vendor/review grounding; max_uses keeps cost bounded.
-            tools: list[dict[str, Any]] = [
-                QUERY_NOTES_TOOL,
-                {
-                    "type": "web_search_20260209",
-                    "name": "web_search",
-                    "max_uses": claude_cfg.web_search_max_uses,
-                },
-            ]
-
-            messages: list[dict[str, Any]] = [{"role": "user", "content": user_content}]
-            data = await _run_extraction_loop(client, claude_cfg, model, tools, messages, db, capture_id=capture_id)
+        data = await provider.extract_structured(
+            settings, db,
+            job_id=capture_id,
+            model=model,
+            system_prompt=SYSTEM_PROMPT,
+            text=prompt_text,
+            image_b64=image_b64,
+            image_media_type=image_media_type,
+            # Chat captures search too — common_notes wants vendor/review
+            # grounding, not just label-photo gap-filling. Every provider
+            # honours the flag; Mistral is the one that may still end up
+            # without search, if its Conversations call falls back.
+            use_web_search=True,
+            output_schema=CAPTURE_OUTPUT_SCHEMA,
+        )
 
         data.setdefault("date", date.today().isoformat())
         try:
@@ -335,7 +300,7 @@ async def run_capture(
     #
     # There is nothing for a model to add here, so it isn't asked. This holds on
     # every provider, which matters because the capture model is selectable and
-    # most of the choices are far weaker at field discipline than Claude.
+    # the open-weight models on offer vary a lot in field discipline.
     #
     # Chat captures are deliberately excluded: there the typed text is the whole
     # capture — name, producer, rating and impressions mixed together — so it
@@ -404,120 +369,10 @@ async def run_capture(
 
 class CaptureFailed(ModelOutputError):
     """A capture that can't produce a note. Subclasses ModelOutputError so the
-    handler in run_capture catches Claude's failures and the provider modules'
-    identically — before, only this one reported cleanly and the other two
-    surfaced as "unexpected error: ..."."""
-
-
-async def _run_extraction_loop(client, claude_cfg, model: str, tools, messages, db: CouchDBClient, *, capture_id: str) -> dict:
-    """Claude tool loop; returns the raw structured dict — run_capture owns
-    validation (shared with the OpenAI path). Emits the WRK-2 telemetry line
-    (tokens summed across the loop for the cost ledger) and WRK-3 on API
-    errors."""
-    web_search = any("web_search" in str(t.get("type", "")) for t in tools)
-    iterations = query_notes_calls = input_tokens = output_tokens = web_searches = 0
-    stop_reason: str | None = None
-    # web_search_20260209 filters results dynamically by running code
-    # server-side, which provisions a container. Once that happens the
-    # container has to be named on every later turn of this conversation, or
-    # the next request 400s with "container_id is required when there are
-    # pending tool uses generated by code execution with tools". We never
-    # declare code_execution ourselves — the search tool brings it along.
-    container_id: str | None = None
-    started = time.monotonic()
-    summary_logged = False
-
-    def emit_summary() -> None:
-        nonlocal summary_logged
-        if summary_logged:
-            return
-        summary_logged = True
-        log_call_summary(
-            job_id=capture_id, site="capture", model=model, stop_reason=stop_reason,
-            input_tokens=input_tokens, output_tokens=output_tokens, iterations=iterations,
-            query_notes=query_notes_calls, web_search=web_search,
-            web_searches=web_searches, duration_s=time.monotonic() - started,
-        )
-
-    for _ in range(claude_cfg.max_tool_iterations):
-        iterations += 1
-        try:
-            response = await client.messages.create(
-                model=model,
-                max_tokens=claude_cfg.max_tokens_capture,
-                thinking={"type": "adaptive"},
-                output_config={"effort": claude_cfg.effort},
-                system=CLAUDE_SYSTEM_PROMPT,
-                tools=tools,
-                messages=messages,
-                **({"container": container_id} if container_id else {}),
-            )
-        except anthropic.APIError as e:
-            log_call_error(job_id=capture_id, site="capture", model=model, exc=e)
-            raise
-        input_tokens += response.usage.input_tokens
-        output_tokens += response.usage.output_tokens
-        usage.record("anthropic", model, response.usage.input_tokens, response.usage.output_tokens)
-        stop_reason = response.stop_reason
-        web_searches += count_web_searches(response.content, capture_id, "capture")
-        # Carry the container forward before any branch below continues the loop.
-        if response.container is not None:
-            container_id = response.container.id
-
-        if response.stop_reason == "refusal":
-            logger.warning("capture %s claude refusal", capture_id)
-            emit_summary()
-            detail = getattr(getattr(response, "stop_details", None), "category", None)
-            raise refused("anthropic", detail)
-
-        if response.stop_reason == "tool_use":
-            messages.append({"role": "assistant", "content": response.content})
-            tool_results = []
-            for block in response.content:
-                if block.type == "tool_use" and block.name == "query_notes":
-                    query_notes_calls += 1
-                    result = await query_notes_impl(db, block.input)
-                    tool_results.append({
-                        "type": "tool_result",
-                        "tool_use_id": block.id,
-                        "content": json.dumps(result),
-                    })
-            if not tool_results:
-                # stop_reason was tool_use but nothing we own was called. An
-                # empty user turn is a 400, which would surface as an opaque
-                # API error rather than the loop's own problem — so name it.
-                emit_summary()
-                raise CaptureFailed("model requested an unknown tool")
-            messages.append({"role": "user", "content": tool_results})
-            continue
-
-        if response.stop_reason == "pause_turn":
-            # Server-side web_search loop hit its internal iteration cap;
-            # resend to resume — do NOT append an extra user "continue" turn.
-            logger.warning("capture %s claude pause_turn resume (iteration %d)", capture_id, iterations)
-            messages.append({"role": "assistant", "content": response.content})
-            continue
-
-        if response.stop_reason == "max_tokens":
-            # Adaptive thinking spends from max_tokens before any visible text,
-            # so a tight budget truncates the JSON mid-string. Name that rather
-            # than letting json.loads raise a cryptic "Unterminated string"
-            # (the OpenAI path surfaces the same case via incomplete_details).
-            logger.warning("capture %s truncated at max_tokens=%d", capture_id, claude_cfg.max_tokens_capture)
-            emit_summary()
-            raise truncated("anthropic", "max_tokens_capture")
-
-        # end_turn: expect a single JSON text block. Prompt-nudged rather than
-        # grammar-guaranteed (see CLAUDE_SYSTEM_PROMPT), so be forgiving of a
-        # stray markdown fence before handing off to Pydantic.
-        emit_summary()
-        text_block = next((b for b in response.content if b.type == "text"), None)
-        if text_block is None:
-            raise no_text_output("anthropic")
-        return loads_model_json(text_block.text, "anthropic")
-
-    emit_summary()
-    raise CaptureFailed("exceeded max tool-use iterations without a final answer")
+    handler in run_capture catches every provider's failures identically —
+    each provider module raises its own ModelOutputError subtype for a bad
+    API response, and this one covers everything specific to this file (an
+    unrecognised model id, missing enrichment, failed validation)."""
 
 
 # Words that can legitimately appear in `notes` without appearing in what the

@@ -1,22 +1,22 @@
 """OpenRouter provider path — used when the admin panel picks a namespaced
-`vendor/model` id (e.g. `google/gemini-3.6-flash`). Mirrors the Claude/OpenAI/
-Mistral paths' shape: one logical call with vision (photo captures), web search,
-the query_notes function tool, and a JSON-schema-nudged output that schema.py's
-Pydantic layer then enforces.
+`vendor/model` id (e.g. `google/gemini-3.6-flash`), which is what every
+default model id in config.yaml is. Mirrors the Mistral path's shape: one
+logical call with vision (photo captures), web search, the query_notes
+function tool, and a JSON-schema-nudged output that schema.py's Pydantic
+layer then enforces.
 
-Why a fourth provider at all: OpenRouter is a router, not a lab. One key reaches
-Google, xAI, Moonshot, Qwen and the rest — model families this app otherwise
-can't offer without a third-party account and a fourth SDK each. The models
-already covered by a direct path (Anthropic, OpenAI, Mistral) are deliberately
-NOT listed in the catalog through OpenRouter: routing them here would only add
-a hop and a markup.
+Why OpenRouter at all: it's a router, not a lab. One key reaches Google, xAI,
+Moonshot, Qwen, DeepSeek and the rest — open-weight and third-party model
+families this app couldn't otherwise offer without a separate account and SDK
+per lab. This is the primary provider path now: this app runs entirely on
+open-weight models (plus Mistral, reached directly — see mistral_provider.py),
+with no Anthropic or OpenAI direct-API path at all.
 
 Surface: OpenRouter speaks the OpenAI **chat completions** API at
 `https://openrouter.ai/api/v1`, so this path reuses the `openai` SDK that is
-already a dependency — just pointed at a different base_url. Not the Responses
-API that openai_provider.py uses; OpenRouter's Responses support is newer and
-narrower than its chat surface, and chat completions is what every model behind
-the router implements.
+already a dependency — just pointed at a different base_url. Chat completions,
+not the Responses API: it's what every model behind the router implements,
+where Responses support is newer and narrower.
 
 Two OpenRouter-specific request extras, both passed through `extra_body`:
 
@@ -25,7 +25,7 @@ Two OpenRouter-specific request extras, both passed through `extra_body`:
   search. Its default `engine: "auto"` uses the underlying provider's built-in
   search where there is one (Gemini, Grok) and Exa otherwise. Billed per result
   on top of tokens, so `max_results` is tied to the same `web_search_max_uses`
-  budget the Claude path caps its searches with.
+  budget this path shares with the Mistral path.
 - **reasoning effort** — OpenRouter normalises `reasoning: {"effort": ...}`
   across model families. Models with no reasoning mode ignore it: OpenRouter
   drops parameters a model doesn't support rather than erroring, which is why
@@ -63,7 +63,7 @@ def is_openrouter_model(model: str) -> bool:
     # ids contain a slash — so this is the whole discriminator. It is checked
     # FIRST in providers.py for the same reason: `openai/gpt-5.1` and
     # `mistralai/mistral-large-2512` are OpenRouter ids that must not be
-    # mistaken for direct-path ones (they aren't today — the direct checks are
+    # mistaken for a direct Mistral one (it isn't today — that check is a
     # `startswith` — but a prefix check that ever loosens shouldn't silently
     # steal traffic from here).
     return "/" in model
@@ -79,7 +79,7 @@ def get_openrouter_client(settings: Settings):
             raise RuntimeError(
                 "an OpenRouter model is selected in the admin panel but "
                 "OPENROUTER_API_KEY is not set in the worker's .env — add it "
-                "(and recreate the worker) or switch back to a Claude model"
+                "(and recreate the worker), or switch to a Mistral model"
             )
         from openai import AsyncOpenAI  # imported lazily; only needed on this path
 
@@ -222,7 +222,7 @@ async def _run_tool_loop(
         # Reasoning tokens come out of the same max_tokens ceiling, so an
         # under-budgeted request truncates. Capture needs complete JSON so it
         # fails; lookup keeps the partial answer with a marker, matching the
-        # Claude and Mistral lookup paths.
+        # Mistral lookup path.
         if getattr(choice, "finish_reason", None) == "length":
             logger.warning(
                 "openrouter %s truncated job_id=%s at max_tokens=%d", site, job_id, max_tokens,
@@ -302,7 +302,7 @@ async def _run_tool_loop(
 
 
 # --------------------------------------------------------------------------
-# Public API (same signatures as openai_provider / mistral_provider)
+# Public API (same signatures as mistral_provider)
 # --------------------------------------------------------------------------
 
 async def extract_structured(
@@ -319,8 +319,15 @@ async def extract_structured(
     output_schema: dict,
     site: str = "capture",
     max_output_tokens: int | None = None,
+    web_search_max_uses: int | None = None,
 ) -> dict:
-    """Capture/manage path: returns the raw structured dict (validated by caller)."""
+    """Capture/manage path: returns the raw structured dict (validated by caller).
+
+    `web_search_max_uses` overrides the default per-capture search budget —
+    manage_service.py passes the larger web_search_max_uses_manage here, since
+    an AI-maintenance plan researches one fact per RECORD rather than one
+    product per call and the default budget would cap it at a handful of
+    records regardless of how many the instruction covers."""
     cfg = settings.models.claude
     client = get_openrouter_client(settings)
     raw = await _run_tool_loop(
@@ -336,7 +343,7 @@ async def extract_structured(
         image_b64=image_b64,
         image_media_type=image_media_type,
         use_web_search=use_web_search,
-        web_search_max_results=cfg.web_search_max_uses,
+        web_search_max_results=web_search_max_uses or cfg.web_search_max_uses,
         output_schema=output_schema,
         max_iterations=cfg.max_tool_iterations,
     )

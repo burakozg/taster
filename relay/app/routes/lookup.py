@@ -2,7 +2,7 @@
 
 Was a single synchronous call in the old direct-to-backend design; now goes
 through the same enqueue-and-poll shape as capture, since the actual work
-(query_notes tool loop against Claude) happens on the QNAP worker, which
+(query_notes tool loop against the model) happens on the QNAP worker, which
 only ever polls outbound — it can't be called into directly anymore.
 """
 from __future__ import annotations

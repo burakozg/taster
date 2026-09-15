@@ -1,0 +1,27 @@
+[project]
+name = "taster-backend"
+version = "0.1.0"
+description = "Tasting-log worker: polls the relay for capture jobs, calls the configured LLM, writes results to CouchDB"
+requires-python = ">=3.12,<3.13"
+license = { text = "MIT" }
+
+dependencies = [
+    # Used for every namespaced vendor/model id: OpenRouter speaks the OpenAI
+    # chat-completions API, so this is the same SDK pointed at OpenRouter's
+    # base_url instead of api.openai.com — see openrouter_provider.py. There is
+    # no direct OpenAI (or Anthropic) API path in this app any more.
+    "openai>=1.100",
+    # Only exercised when the admin panel selects a mistral-*/ministral-*/pixtral-* model.
+    # Floor is 2.0, not 1.0: 2.x moved the client to the `mistralai.client`
+    # subpackage and made top-level `mistralai` a namespace package, so the two
+    # major versions need different import paths (see mistral_provider.py).
+    "mistralai>=2.0",
+    "httpx>=0.27",
+    "pydantic>=2.8",
+    "PyYAML>=6.0",
+]
+
+# This service is run in place (`python -m app.worker`), not distributed as an
+# installable package — no build-system / wheel packaging needed.
+[tool.uv]
+package = false

@@ -1,30 +1,26 @@
-"""The capture output schema, shared by all four provider paths.
+"""The capture output schema, shared by both provider paths.
 
 Kept as one flat, permissive object (not a strict anyOf-per-type union) —
 structured-output JSON schema support excludes numeric/string length
-constraints and works best kept simple (see claude-api skill notes on
-structured-output limitations). Pydantic validation in schema.py is the real
-enforcement layer; this is just a strong nudge so the raw output is close to
-valid on the first try.
+constraints and works best kept simple. Pydantic validation in schema.py is
+the real enforcement layer; this is just a strong nudge so the raw output is
+close to valid on the first try.
 
 How each path consumes it:
 
-- **Claude** — as *prompt text* (capture_service.CLAUDE_SYSTEM_PROMPT), NOT as
-  output_config.format. Flatness costs us the grammar path there: 47 optional
-  properties against a limit of 24, and Anthropic rejects the request outright
-  ("Schemas contains too many optional parameters", 400). Restoring the grammar
-  would mean a per-note-type schema and a classify-then-extract two-call shape.
-- **OpenAI** — as text.format json_schema with `strict: False`, which skips
-  grammar compilation and so has no optional-parameter ceiling.
-- **Mistral** — as response_format json_schema, also `strict: False`.
-- **OpenRouter** (Qwen, Gemini, Grok, Moonshot, …) — same response_format
-  json_schema shape as Mistral, also `strict: False`. Every model behind the
-  router shares this one nudge, so a weak model on this path is exactly as
-  prone to dropping non-required fields as Mistral was — see the `required`
-  list below.
+- **Mistral** — as response_format json_schema, `strict: False`.
+- **OpenRouter** (Qwen, Gemini, Grok, Moonshot, DeepSeek, …) — same
+  response_format json_schema shape as Mistral, also `strict: False`. Every
+  model behind the router shares this one nudge, so a weak model on this path
+  is exactly as prone to dropping non-required fields as Mistral was — see the
+  `required` list below.
 
-So the optional-property count is load-bearing on the Claude path only: keep
-new fields optional freely, but don't assume a grammar is enforcing any of it.
+`strict: False` on both paths means neither compiles a grammar, so there is no
+optional-property ceiling to keep this schema under (an earlier revision of
+this file, when it also had to serve Anthropic's structured-output grammar
+compiler, was capped at 24 optional properties for that reason — that
+constraint is gone along with the direct Anthropic path). Keep new fields
+optional freely, but don't assume a grammar is enforcing any of it.
 """
 
 from app.categories import NOTE_TYPES
@@ -156,11 +152,9 @@ CAPTURE_OUTPUT_SCHEMA = {
     # (schema.BaseNote) — without them here, a permissive `strict: False`
     # model (observed on Mistral) can drop them from its output entirely and
     # fail Pydantic validation on a clean, well-described capture. Listing
-    # them here doesn't cost anything on the Claude path (this schema is only
-    # ever pasted into the prompt as text there, never wired as an actual
-    # output_config.format grammar — see the module docstring), and pairing
-    # notes (which have neither field) just get name/status keys Pydantic
-    # silently ignores as extras.
+    # them here costs nothing on either path (see the module docstring), and
+    # pairing notes (which have neither field) just get name/status keys
+    # Pydantic silently ignores as extras.
     "required": ["type", "source", "country_of_origin", "name", "status", "date"],
     "additionalProperties": False,
 }

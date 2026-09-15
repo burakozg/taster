@@ -1,6 +1,6 @@
 """Pydantic models for tasting notes and pairings — see tasting-log-design.md §5.
 
-These are the enforcement layer: Claude's structured-output JSON is a nudge,
+These are the enforcement layer: the model's structured-output JSON is a nudge,
 this validation is what actually guarantees a clean document ever reaches
 CouchDB. Discriminated on `type`.
 """
@@ -497,7 +497,7 @@ _MODEL_BY_TYPE = {m.model_fields["type"].default: m for m in _ALL_MODELS}
 
 
 def parse_any_note(data: dict) -> AnyNote:
-    """Validate a raw dict (from Claude's structured output) into a note model."""
+    """Validate a raw dict (from the model's structured output) into a note model."""
     kind = data.get("type")
     model = _MODEL_BY_TYPE.get(kind)
     if model is None:

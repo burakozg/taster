@@ -1,7 +1,7 @@
 """POST /capture/photo, POST /capture/chat, GET /capture/{id} — PWA-facing.
 
 Unlike the old direct-to-backend design, these just enqueue a job; the QNAP
-worker polls for it, does the actual Claude/CouchDB work, and posts the
+worker polls for it, does the actual model/CouchDB work, and posts the
 result back via /worker/jobs/{id}/result.
 """
 from __future__ import annotations

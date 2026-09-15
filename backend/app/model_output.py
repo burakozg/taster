@@ -1,20 +1,18 @@
-"""Uniform handling of unusable model output, shared by all three provider paths.
+"""Uniform handling of unusable model output, shared by both provider paths.
 
-The three paths detect trouble differently — that part is irreducible, because
+The two paths detect trouble differently — that part is irreducible, because
 each API signals it in its own way:
 
-    truncation   Anthropic  stop_reason == "max_tokens"
-                 OpenAI     incomplete_details.reason / status == "incomplete"
-                 Mistral    choices[0].finish_reason == "length"
-    refusal      Anthropic  stop_reason == "refusal"
-                 OpenAI     (no signal consumed here)
-                 Mistral    (no signal consumed here)
+    truncation   OpenRouter  choices[0].finish_reason == "length"
+                 Mistral     choices[0].finish_reason == "length"
+    refusal      (neither path consumes a dedicated refusal signal)
 
-What used to differ needlessly was everything downstream of detection: three
-wordings for the same failure, fence-tolerant JSON parsing on the Claude path
-only, and — most visibly — provider errors reaching the PWA as "unexpected
-error: ..." while Claude's arrived as a clean sentence. That asymmetry made the
-same underlying problem look like three different bugs.
+What used to differ needlessly (back when this app also called Anthropic's and
+OpenAI's APIs directly) was everything downstream of detection: differing
+wordings for the same failure, fence-tolerant JSON parsing on only one path,
+and — most visibly — provider errors reaching the PWA as "unexpected error:
+..." on some paths while another's arrived as a clean sentence. That asymmetry
+made the same underlying problem look like different bugs per provider.
 
 So detection stays local and reporting comes from here. Raise ModelOutputError
 (or a subclass) for "the model ran but its output is unusable"; callers treat it
@@ -42,11 +40,12 @@ def truncated(provider: str, budget_key: str) -> ModelOutputError:
     thinking tokens are drawn from the same ceiling on the providers that have
     them, so the budget can be exhausted before any visible text is produced.
     """
-    # config.yaml's model-config block is still named `claude:` even though
-    # every provider (OpenAI/Mistral/OpenRouter included) reads its budgets
+    # config.yaml's model-config block is still named `claude:` for historical
+    # reasons (predates dropping the direct Anthropic/OpenAI paths) even
+    # though both remaining providers (Mistral, OpenRouter) read their budgets
     # from it — see config.ClaudeConfig's docstring. Naming it plainly here,
     # with the `[provider]` tag already on the message, avoids reading like
-    # this OpenRouter/Mistral/OpenAI failure was somehow routed through Claude.
+    # this OpenRouter/Mistral failure was somehow routed through Claude.
     return ModelOutputError(
         f"model output was truncated (hit the output token limit) — raise "
         f"{budget_key} under config.yaml's `claude:` block (shared setting "
@@ -57,12 +56,6 @@ def truncated(provider: str, budget_key: str) -> ModelOutputError:
 def no_text_output(provider: str, detail: str | None = None) -> ModelOutputError:
     return ModelOutputError(
         f"model produced no text output{f' ({detail})' if detail else ''} [{provider}]"
-    )
-
-
-def refused(provider: str, detail: str | None = None) -> ModelOutputError:
-    return ModelOutputError(
-        f"the model declined the request{f': {detail}' if detail else ''} [{provider}]"
     )
 
 
@@ -102,9 +95,8 @@ def _extract_json_object(text: str) -> str | None:
 def loads_model_json(text: str, provider: str) -> dict:
     """Parse the model's JSON reply, tolerating the wrappers models put round it.
 
-    No provider path enforces the output schema any more — the Claude path
-    describes it in the prompt, and the other three pass `strict: False` — so a
-    fenced or prose-wrapped reply is possible everywhere.
+    Neither provider path enforces the output schema strictly — both pass
+    `strict: False` — so a fenced or prose-wrapped reply is possible on either.
 
     Reasoning models made this sharper: they narrate before answering, and on
     OpenRouter that narration can arrive in `content` ahead of the JSON (or as a

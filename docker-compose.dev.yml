@@ -9,7 +9,7 @@
 # ever touching Fly or a NAS.
 #
 # Usage:
-#   cp backend/.env.example backend/.env   # fill in ANTHROPIC_API_KEY
+#   cp backend/.env.example backend/.env   # fill in OPENROUTER_API_KEY
 #   cp relay/.env.example relay/.env       # fill in TASTER_API_KEY, WORKER_API_KEY
 #   # WORKER_API_KEY in backend/.env must match relay/.env's value.
 #   # backend/.env's COUCHDB_USER/PASSWORD should match this file's
