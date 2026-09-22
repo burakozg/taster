@@ -28,6 +28,7 @@ from app.couchdb_client import CouchDBClient
 from app.errors import PhaseError, exc_label
 from app.markdown import render_markdown
 from app.model_output import ModelOutputError
+from app.pairing_match import ground_pairing_matches
 from app.providers import provider_for
 from app.schema import AnyNote, parse_any_note, slug_tokens
 from app.text_facts import extract_facts
@@ -337,6 +338,12 @@ async def run_capture(
     # future Obsidian renames (see schema.BaseNote.uid / reconcile.py).
     if getattr(note, "uid", None) is None:
         note.uid = uuid.uuid4().hex
+
+    if note.item_type() != "pairing":
+        try:
+            await ground_pairing_matches(db, settings, note)
+        except Exception as e:  # noqa: BLE001 — grounding must never fail a capture
+            logger.warning("capture %s pairing grounding failed: %s", capture_id, e)
 
     # Past this point the model work is done; remaining failures are CouchDB
     # integration failures, tagged with their phase (WRK-1) so the worker's

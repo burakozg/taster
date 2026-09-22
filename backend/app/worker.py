@@ -158,7 +158,7 @@ def _log_startup_config(settings: Settings) -> None:
         "heartbeat_interval_s=%.0f couchdb_url=%s couchdb_db=%s couchdb_user=%s "
         "image_model=%s text_model=%s effort=%s max_tokens_capture=%d "
         "max_tokens_lookup=%d web_search_max_uses=%d max_tool_iterations=%d usage_day=%s "
-        "mistral_api_key=%s openrouter_api_key=%s "
+        "mistral_api_key=%s openrouter_api_key=%s typesafe_api_key=%s "
         "worker_api_key=%s couchdb_password=%s",
         settings.relay_url, settings.poll_interval_s, settings.items_snapshot_interval_s,
         settings.heartbeat_interval_s, settings.couchdb_url, settings.couchdb_db,
@@ -167,6 +167,7 @@ def _log_startup_config(settings: Settings) -> None:
         c.max_tool_iterations, datetime.now().astimezone().strftime("%Y-%m-%d %Z%z"),
         secret_state(settings.mistral_api_key),
         secret_state(settings.openrouter_api_key),
+        secret_state(settings.typesafe_api_key),
         secret_state(settings.worker_api_key), secret_state(settings.couchdb_password),
     )
 

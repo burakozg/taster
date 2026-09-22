@@ -33,6 +33,7 @@ from app.couchdb_client import CouchDBClient
 from app.items_query import query_all_items
 from app.markdown import render_markdown
 from app.model_output import ModelOutputError
+from app.pairing_match import ground_repair_changes
 from app.providers import provider_for
 from app.schema import parse_any_note
 
@@ -336,6 +337,7 @@ async def run_repair_pairings_plan(
     records = await query_all_items(db)
     items = [r for r in records if r.get("type") != "pairing"]
     all_compact = _repair_compact(items)
+    compact_by_id = {r["_id"]: r for r in all_compact if r.get("_id")}
 
     async def _run_batch(targets: list[dict], batch_no: int) -> list[dict]:
         prompt = (
@@ -370,6 +372,11 @@ async def run_repair_pairings_plan(
     all_changes: list[dict] = []
     for n, batch in enumerate(batches, 1):
         batch_changes = await _run_batch(batch, n)
+        # Ground each change's `matches` in Jev before the plan is returned
+        # for review — so what gets approved is already the typed decision,
+        # not the maintenance model's own guess quietly swapped out later at
+        # apply time. See pairing_match.py's module docstring.
+        await ground_repair_changes(db, settings, batch_changes, compact_by_id)
         all_changes.extend(batch_changes)
         logger.info(
             "repair pairings %s: batch %d/%d -> %d change(s)",

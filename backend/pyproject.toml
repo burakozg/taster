@@ -19,6 +19,9 @@ dependencies = [
     "httpx>=0.27",
     "pydantic>=2.8",
     "PyYAML>=6.0",
+    # Grounds pairing_match.py's Jev call — see that module's docstring.
+    # Only exercised when TYPESAFE_API_KEY is set.
+    "typesafe-sdk>=0.7",
 ]
 
 # This service is run in place (`python -m app.worker`), not distributed as an

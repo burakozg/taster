@@ -88,6 +88,10 @@ class Settings(BaseModel):
     # rather than enforced at startup so an admin override to a Mistral model
     # still works with only MISTRAL_API_KEY set.
     openrouter_api_key: str | None = None
+    # Optional — grounds pairing_match.py's Jev call. Without it, capture keeps
+    # using the capture model's own free-text pick of `matches` (unchanged,
+    # pre-existing behaviour) rather than failing.
+    typesafe_api_key: str | None = None
     couchdb_url: str = "http://taster-couchdb:5984"
     couchdb_db: str = "hobby"
     couchdb_user: str
@@ -126,6 +130,7 @@ def get_settings() -> Settings:
     return Settings(
         mistral_api_key=os.environ.get("MISTRAL_API_KEY"),
         openrouter_api_key=os.environ.get("OPENROUTER_API_KEY"),
+        typesafe_api_key=os.environ.get("TYPESAFE_API_KEY"),
         couchdb_url=os.environ.get("COUCHDB_URL", "http://taster-couchdb:5984"),
         couchdb_db=os.environ.get("COUCHDB_DB", "hobby"),
         couchdb_user=os.environ["COUCHDB_USER"],
