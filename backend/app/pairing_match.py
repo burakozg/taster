@@ -180,15 +180,26 @@ async def ground_repair_changes(
     # nothing logged in between is indistinguishable from stuck. This is the
     # only caller that loops over multiple items per invocation, so it is the
     # one that needs its own per-item line.
-    grounded = 0
+    grounded = skipped = 0
     for n, change in enumerate(changes, 1):
         pairings = change.get("pairings") or []
         indexed = [(i, p["profile"]) for i, p in enumerate(pairings) if p.get("profile")]
         if not indexed:
             continue
-        item_type = change.get("type")
         record = items_by_id.get(change.get("doc_id") or "")
+        # `type` is not in REPAIR_PAIRINGS_SCHEMA's `required` list, so a
+        # model under token pressure can drop it — fall back to the record we
+        # already have (reliable; it's the vault's own data, not the model's
+        # echo of it) rather than skipping an item just because the model
+        # left an optional field out.
+        item_type = change.get("type") or (record.get("type") if record else None)
         if not item_type or record is None:
+            skipped += 1
+            logger.warning(
+                "pairing_match: skipping doc_id=%s — %s",
+                change.get("doc_id"),
+                "no matching record" if record is None else "no type on record or change",
+            )
             continue
 
         state = {k: v for k, v in record.items() if k != "_id"}
@@ -210,8 +221,13 @@ async def ground_repair_changes(
             "pairing_match: repair batch %d/%d grounded doc_id=%s",
             n, len(changes), change.get("doc_id"),
         )
-    if grounded:
-        logger.info("pairing_match: repair batch done, grounded %d/%d item(s)", grounded, len(changes))
+    # Unconditional, not `if grounded:` — a batch that grounds nothing is
+    # exactly the failure mode this logging exists to catch, so it needs to
+    # be visible too, not just the success case.
+    logger.info(
+        "pairing_match: repair batch done, grounded %d/%d item(s), skipped %d",
+        grounded, len(changes), skipped,
+    )
 
 
 def _describe(doc: dict[str, Any]) -> str:
