@@ -105,6 +105,10 @@ async def choose_matches(
         for i, profile in enumerate(profiles)
     }
 
+    logger.info(
+        "pairing_match: grounding %d profile(s) against %d candidate(s)",
+        len(profiles), len(by_id),
+    )
     try:
         client = AsyncTypeSafeClient(api_key=settings.typesafe_api_key)
         response = await client.system_one(state=state, questions=questions)
@@ -124,6 +128,10 @@ async def choose_matches(
             for item_id, probability in ranked[:MAX_MATCHES]
             if probability >= MIN_MATCH_PROBABILITY
         ])
+    logger.info(
+        "pairing_match: grounded, matched=%d of %d profile(s)",
+        sum(1 for m in out if m), len(out),
+    )
     return out
 
 
@@ -167,7 +175,13 @@ async def ground_repair_changes(
     """
     if not settings.typesafe_api_key:
         return
-    for change in changes:
+    # One Jev call per item, sequential and silent inside choose_matches
+    # otherwise — a batch of several items grounding one at a time with
+    # nothing logged in between is indistinguishable from stuck. This is the
+    # only caller that loops over multiple items per invocation, so it is the
+    # one that needs its own per-item line.
+    grounded = 0
+    for n, change in enumerate(changes, 1):
         pairings = change.get("pairings") or []
         indexed = [(i, p["profile"]) for i, p in enumerate(pairings) if p.get("profile")]
         if not indexed:
@@ -191,6 +205,13 @@ async def ground_repair_changes(
             continue
         for (i, _), matches in zip(indexed, results, strict=True):
             pairings[i]["matches"] = matches
+        grounded += 1
+        logger.info(
+            "pairing_match: repair batch %d/%d grounded doc_id=%s",
+            n, len(changes), change.get("doc_id"),
+        )
+    if grounded:
+        logger.info("pairing_match: repair batch done, grounded %d/%d item(s)", grounded, len(changes))
 
 
 def _describe(doc: dict[str, Any]) -> str:

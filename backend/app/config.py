@@ -57,7 +57,14 @@ class ClaudeConfig(BaseModel):
     # eventually overflows max_tokens_manage as the vault grows. So it's chunked:
     # this many target items per model call, results merged. Keeps each call's
     # output bounded no matter how large the vault gets.
-    repair_batch_size: int = 10
+    #
+    # Was 10 — a real batch of 10 (each with web-searched profile+reason,
+    # sometimes cocktails, plus reasoning tokens spent from the same budget
+    # first) truncated at max_tokens_manage's 16384 cap and failed the whole
+    # job after 398s (2026-09-22 production run, job b1). Halved rather than
+    # raising the cap: more, smaller calls costs the same total tokens but
+    # bounds any one call's risk of truncating.
+    repair_batch_size: int = 5
     effort: str = "medium"
     web_search_max_uses: int = 3
     # Separate, larger budget for the AI-maintenance PLAN, which researches one
