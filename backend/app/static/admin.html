@@ -511,6 +511,7 @@ async function startJobs(path, body) {
   const r = await api(path, { method: "POST", body: JSON.stringify(body) });
   state.jobs = r.jobs.map((j) => ({ ...j, status: "queued", done: false }));
   state.rowJob = {};
+  state.runMode = path === "/api/details" ? "details" : body.mode;   // what a retry would re-run
   if (path === "/api/details") { state.proposals = {}; state.revealed = false; renderReview(); }
   for (const j of state.jobs) for (const d of j.doc_ids) state.rowJob[d] = { status: "queued" };
   state.total = r.items; $("progwrap").hidden = false; render(); poll();
@@ -560,16 +561,30 @@ async function poll() {
       await new Promise((r) => setTimeout(r, 3000));
     }
     say("All jobs finished. Refreshing…");
-    // Failed items are selected again, so a retry is one click on the same button.
     const failedIds = Object.entries(state.rowJob).filter(([, r]) => r.status === "failed").map(([id]) => id);
-    if (failedIds.length) { state.sel = new Set(failedIds); }
-    if (Object.keys(state.proposals).length) { say(`Done — ${Object.keys(state.proposals).length} item(s) ready to review in “Proposed details”.`); return; }
-    await refreshUntilFresh();
-    if (failedIds.length) {
-      const why = [...new Set(Object.values(state.rowJob).filter((r) => r.status === "failed").map((r) => r.error).filter(Boolean))][0];
-      say(`${failedIds.length} item(s) failed${why ? ": " + why.slice(0, 200) : ""} — they are selected again; press the same button to retry.`, "warnc");
+    const why = [...new Set(Object.values(state.rowJob).filter((r) => r.status === "failed").map((r) => r.error).filter(Boolean))][0];
+    // The run is over, so the selection is released. Left in place, the same ticked
+    // items sat ready for the next click on Regenerate — and an accidental click re-ran
+    // (and re-billed) work that had just finished. A retry is an explicit button below.
+    state.sel = new Set(); render();
+    if (Object.keys(state.proposals).length) {
+      say(`Done — ${Object.keys(state.proposals).length} item(s) ready to review in “Proposed details”.`);
+      if (failedIds.length) offerRetry(failedIds, why);
+      return;
     }
+    await refreshUntilFresh();
+    if (failedIds.length) offerRetry(failedIds, why);
   } catch (e) { say(e.message, "bad"); } finally { polling = false; }
+}
+// After a run with failures: say why, and offer a retry for exactly those items.
+// It goes through the normal confirmation, so nothing re-runs without a click on Start.
+function offerRetry(ids, why) {
+  say(`${ids.length} item(s) failed${why ? ": " + why.slice(0, 200) : ""}. `, "warnc");
+  const b = document.createElement("button");
+  b.textContent = `Retry ${ids.length} failed`;
+  const mode = state.runMode;
+  b.onclick = () => ask(mode, ids);
+  $("msg").append(b);
 }
 async function refreshUntilFresh() {
   await load();
