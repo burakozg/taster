@@ -413,15 +413,13 @@ tasting-log-design.md §7: LiveSync copies on your devices are sync
 artifacts, not backups — this bind-mounted directory is the one that
 matters). This used to say "add it to whatever QNAP backup job already
 covers your other Container Station app data" — advice nobody had actually
-verified was being followed. As of 2026-08-30 it has a real, tested one
-instead: `homelab/backup-vault.sh`, run nightly from the Mac (LAN-reachable
-CouchDB, so the dump lands off the NAS from the start — see
-`homelab/README.md`'s "Backing up the vault" for the full story). Since
-2026-09-02 that means the `hobby` database specifically (`VAULT_DB=hobby`,
-its own scheduled LaunchAgent) — taster's data moved out of the shared
-`the_brain` database (called `tastings` until 2026-09-04) that run, see "The
-vault split" in `homelab/README.md`.
-This QNAP
+verified was being followed. It now has a real, tested one: `backup-vault.sh`
+from the `homelab` repo, run nightly **on the NAS** by the `homelab-jobs`
+container (03:30 `the_brain`, 03:45 `hobby` — taster's data lives in `hobby`
+since the vault split, see "The vault split" in `homelab/README.md`). Dumps land
+on a different NAS volume from the live data; the older dumps the Mac used to
+take in `~/Backups/vault-couchdb` stop growing but remain the only off-NAS copy.
+See `homelab/README.md`'s "Backing up the vault" for the full story. This QNAP
 bind-mount path is still worth covering by a NAS-side backup job too if one
 already exists for other reasons, but it is no longer the only copy.
 
