@@ -39,6 +39,7 @@ import httpx
 from app.config import Settings
 from app.couchdb_client import CouchDBClient
 from app.model_output import ModelOutputError
+from app.model_roles import effort_for_role, model_for_role
 from app.providers import provider_for
 from app.schema import parse_any_note
 from app import history
@@ -306,7 +307,7 @@ async def _work_one(settings: Settings, db: CouchDBClient, model: str, job_id: s
         system_prompt=_WORKER_PROMPT, text=ask,
         image_b64=None, image_media_type=None,
         use_web_search=True, output_schema=_WORKER_SCHEMA, site="details",
-        web_search_max_uses=3,
+        web_search_max_uses=3, effort=effort_for_role(settings, "research"),
     )
     return out
 
@@ -331,13 +332,19 @@ async def fetch_details(
     fields: list[str] | None = None,
     overwrite: bool = False,
     model_override: str | None = None,
+    reviewer_model: str | None = None,
 ) -> dict[str, Any]:
     """Run the workers for one item and return verified PROPOSALS (nothing is written).
 
     By default only fields that are empty on the record are looked up;
     `overwrite=True` also re-checks filled ones, and a proposal that differs from
     the stored value is returned unticked for a person to decide."""
-    model = model_override or settings.models.claude.text_model
+    # Workers are many small search-and-quote lookups: the RESEARCH role. The
+    # reviewer is one judgement over their output: the REASONING role — a separate
+    # model by default only if configured, but separable, because a model grading
+    # its own searches shares their blind spots.
+    model = model_override or model_for_role(settings, "research")
+    review_model = reviewer_model or model_for_role(settings, "reasoning")
     item = await db.get_document(doc_id)
     if item is None:
         raise ValueError(f"record not found: {doc_id}")
@@ -407,9 +414,9 @@ async def fetch_details(
     live = [p for p in proposals if p["evidence"] in ("verified", "unverified")]
     if live:
         try:
-            provider = provider_for(model)
+            provider = provider_for(review_model)
             review = await provider.extract_structured(
-                settings, db, job_id=f"{job_id}#verify", model=model,
+                settings, db, job_id=f"{job_id}#verify", model=review_model,
                 system_prompt=_VERIFIER_PROMPT,
                 text=json.dumps({
                     "record": _identity(item),
@@ -420,6 +427,7 @@ async def fetch_details(
                 }, ensure_ascii=False),
                 image_b64=None, image_media_type=None,
                 use_web_search=False, output_schema=_VERIFIER_SCHEMA, site="details",
+                effort=effort_for_role(settings, "reasoning"),
             )
             result["identity_ok"] = review.get("identity_ok")
             result["identity_note"] = str(review.get("identity_note") or "")

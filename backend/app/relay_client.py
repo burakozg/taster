@@ -48,6 +48,12 @@ class RelayClient:
         resp = await self._client.post("/worker/items/snapshot", json=body)
         resp.raise_for_status()
 
+    async def get_model_settings(self) -> dict[str, Any]:
+        """The Admin tab's model choices (see model_roles.admin_overrides)."""
+        resp = await self._client.get("/worker/settings")
+        resp.raise_for_status()
+        return resp.json()
+
     async def push_usage(self, report_id: str, rows: list[dict[str, Any]]) -> None:
         """Report a batch of token-usage deltas (WRK-10). `report_id` is stable
         across retries of the same batch so the relay can ignore one it has

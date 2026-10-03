@@ -135,16 +135,21 @@
           mistral-*/ministral-* models need MISTRAL_API_KEY, and vendor/model
           ones (Gemini, Grok, Kimi, Qwen, DeepSeek) go through OpenRouter and
           need OPENROUTER_API_KEY — in the worker's .env.</p>
-        <p class="hint">Split by whether the job carries a photo — the only
-          shape that needs vision. Everything else is reasoning and
-          tool-calling work, where a vision model is the wrong instrument.</p>
-        <label class="admin-label">Image model
-          <span class="admin-scope">photo captures &middot; shop lookups</span>
-          <select id="admin-image-model"></select>
+        <p class="hint">Three roles. A vision model only reads photos; the
+          rest is text work, split by shape — many cheap web-search lookups versus
+          fewer judgement calls. Applies the same whether a job starts here or on
+          the data page.</p>
+        <label class="admin-label">Vision
+          <span class="admin-scope">reads photos &amp; labels, nothing else</span>
+          <select id="admin-vision-model"></select>
         </label>
-        <label class="admin-label">Text model
-          <span class="admin-scope">chat &middot; lookups &middot; AI Maintain &middot; pairings</span>
-          <select id="admin-text-model"></select>
+        <label class="admin-label">Research
+          <span class="admin-scope">capture &middot; fetch details &middot; pairings (web search + JSON)</span>
+          <select id="admin-research-model"></select>
+        </label>
+        <label class="admin-label">Reasoning
+          <span class="admin-scope">chat &middot; detail reviewer &middot; AI Maintain &middot; Ask AI</span>
+          <select id="admin-reasoning-model"></select>
         </label>
         <div class="manage-actions">
           <button id="admin-save">Save</button>
@@ -160,6 +165,10 @@
         <div id="usage-latest"></div>
         <ul id="usage-days" class="usage-days"></ul>
         <p id="usage-total" class="hint"></p>
+        <h4 class="usage-sub">By task</h4>
+        <p class="hint">What each kind of work spent, per model — the numbers to judge
+          the model roles against. Counted from when tasks were first tagged.</p>
+        <ul id="usage-tasks" class="usage-days"></ul>
       </div>
 
       <div class="admin-card">

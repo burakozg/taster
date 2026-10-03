@@ -33,6 +33,7 @@ from app.couchdb_client import CouchDBClient
 from app.detail_fetch import FETCHABLE, is_empty
 from app.items_query import query_all_items
 from app.model_output import ModelOutputError
+from app.model_roles import effort_for_role, model_for_role
 from app.providers import provider_for
 
 logger = logging.getLogger("worker.chat")
@@ -248,7 +249,7 @@ async def run_chat(
 ) -> dict[str, Any]:
     """One chat turn: the reply, plus resolved actions awaiting confirmation."""
     convo = _clean_messages(messages)
-    model = model_override or settings.models.claude.text_model
+    model = model_override or model_for_role(settings, "reasoning")
     provider = provider_for(model)
     if provider is None:
         raise ModelOutputError(f"{model!r} is not a recognised model id")
@@ -267,6 +268,7 @@ async def run_chat(
         system_prompt=SYSTEM_PROMPT, text=text,
         image_b64=None, image_media_type=None,
         use_web_search=False, output_schema=_SCHEMA, site="chat",
+        effort=effort_for_role(settings, "reasoning"),
     )
     reply = str(out.get("reply") or "").strip()
     if not reply:

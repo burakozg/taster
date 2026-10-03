@@ -118,7 +118,10 @@ MODEL_IDS = {m["id"] for m in MODEL_CATALOG}
 # folded into `image_model`. They stay listed so a value stored under the old
 # name is still pruned when the model behind it is retired, and so migrate()
 # below has one place to read them from.
-_MODEL_SETTINGS = ("image_model", "text_model", "capture_model", "lookup_model")
+_MODEL_SETTINGS = (
+    "vision_model", "research_model", "reasoning_model",
+    "image_model", "text_model", "capture_model", "lookup_model",
+)
 
 
 def migrate_model_settings(settings: dict) -> dict:
@@ -135,7 +138,19 @@ def migrate_model_settings(settings: dict) -> dict:
         legacy = settings.get("capture_model") or settings.get("lookup_model")
         if legacy:
             out["image_model"] = legacy
-    return out
+    # Two knobs became three ROLES (backend model_roles.py): image_model is the
+    # vision role, text_model is both research and reasoning. A choice stored
+    # under the old names is folded into the roles — each role keeps its own
+    # value if one was saved — and the old keys are dropped, so every consumer
+    # sees one shape.
+    if out.get("image_model") and not out.get("vision_model"):
+        out["vision_model"] = out["image_model"]
+    if out.get("text_model"):
+        out.setdefault("research_model", out["text_model"])
+        out.setdefault("reasoning_model", out["text_model"])
+    out.pop("image_model", None)
+    out.pop("text_model", None)
+    return {k: v for k, v in out.items() if v}
 
 
 def prune_unknown_models(settings: dict) -> dict:

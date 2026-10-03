@@ -49,6 +49,14 @@ async def next_job(settings: Settings = Depends(get_settings)) -> dict | None:
     return job
 
 
+@router.get("/settings")
+async def model_settings() -> dict:
+    """The Admin tab's model choices, for worker-side processes that are not
+    handed them with a job (taster-admin). Same pruned, migrated shape the worker
+    receives with each claim."""
+    return migrate_model_settings(prune_unknown_models(get_admin_settings()))
+
+
 class JobResult(BaseModel):
     status: Literal["done", "failed"]
     result: dict[str, Any] | None = None
@@ -92,6 +100,9 @@ class UsageRow(BaseModel):
     day: str
     provider: str
     model: str
+    # The task that made the calls (capture, details, chat, …); absent from
+    # workers that predate tagging, booked under '' then.
+    site: str = ""
     # ge=0 because these are added to a running total: one negative row from a
     # mangled payload would silently walk the ledger backwards.
     calls: int = Field(ge=0)

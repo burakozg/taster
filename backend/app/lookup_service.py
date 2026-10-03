@@ -11,6 +11,8 @@ import logging
 
 from app.config import Settings
 from app.couchdb_client import CouchDBClient
+from app.image_reader import read_image
+from app.model_roles import effort_for_role, model_for_role
 from app.providers import provider_for
 
 logger = logging.getLogger(__name__)
@@ -55,13 +57,26 @@ async def run_lookup(
     question: str,
     image_b64: str | None = None,
     image_media_type: str | None = None,
-    model_override: str | None = None,
+    vision_model: str | None = None,
+    reasoning_model: str | None = None,
 ) -> LookupResult:
-    claude_cfg = settings.models.claude
-    # Admin-panel choice (delivered per job by the relay) wins over the baked-in
-    # config.yaml default. providers.py maps the resolved id to its
-    # OpenRouter/Mistral provider module.
-    model = model_override or claude_cfg.text_model
+    # The answer is judgement over the vault (query_notes) plus a little web
+    # search: the REASONING role. A shop-mode photo is only read, by the VISION
+    # role, into text first — the vision model never runs the tool loop. If the
+    # photo has no legible text, the vision model sees it itself and answers, as
+    # it did before the split.
+    model = reasoning_model or model_for_role(settings, "reasoning")
+    if image_b64:
+        label = await read_image(
+            settings, db, job_id=lookup_id,
+            model=vision_model or model_for_role(settings, "vision"),
+            image_b64=image_b64, image_media_type=image_media_type,
+        )
+        if label:
+            question = f"{question}\n\n{label}"
+            image_b64 = None
+        else:
+            model = vision_model or model_for_role(settings, "vision")
     provider = provider_for(model)
     if provider is None:
         # Only reachable via a stale admin-panel override or a hand-edited
@@ -79,5 +94,6 @@ async def run_lookup(
         question=question,
         image_b64=image_b64,
         image_media_type=image_media_type,
+        effort=effort_for_role(settings, "reasoning"),
     )
     return LookupResult(answer=answer)

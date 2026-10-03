@@ -24,6 +24,8 @@ from pydantic import BaseModel, ValidationError
 
 from app.capture_json_schema import CAPTURE_OUTPUT_SCHEMA
 from app.config import Settings
+from app.image_reader import read_image
+from app.model_roles import effort_for_role, model_for_role
 from app.couchdb_client import CouchDBClient
 from app.errors import PhaseError, exc_label
 from app.markdown import render_markdown
@@ -48,7 +50,8 @@ must never repeat the producer. Parse carefully: in "smoked My Father Blue \
 Series", "smoked" is the user's verb, the producer is "My Father". If \
 unsure how a title splits, use web_search or query_notes to check.
 
-For a photo capture: read the label image and extract name, producer, \
+For a photo capture (you get the label as an image, or as a verbatim \
+transcription of what is printed on it): read the label and extract name, producer, \
 category, and category-specific fields. Use web_search to fill fields not \
 printed on the label (cask finish/maturation and ABV for whisky, roast process/\
 origin for coffee, wrapper/strength for cigars, blend_type/cut/component \
@@ -198,20 +201,23 @@ async def run_capture(
     stars: float | None = None,
     image_b64: str | None = None,
     image_media_type: str | None = None,
-    model_override: str | None = None,
-    enrichment_model: str | None = None,
+    vision_model: str | None = None,
+    research_model: str | None = None,
 ) -> CaptureResult:
     claude_cfg = settings.models.claude
     # Admin-panel choice (delivered per job by the relay) wins over the
     # baked-in config.yaml default. providers.py maps the resolved id to its
     # OpenRouter/Mistral provider module.
-    model = model_override or claude_cfg.image_model
-    # Enrichment (common_notes, pairings) is reasoning + web search + JSON, not
-    # vision. The model that read the label photo is the wrong one for it: the
-    # vision model answered the narrow enrichment call with ~15 tokens (an empty
-    # object) while the text model fills the same fields reliably. So the
-    # enrichment step always runs on the text model.
-    enrich_model = enrichment_model or claude_cfg.text_model
+    #
+    # Two roles (model_roles.py). The VISION model only reads the photo. The
+    # RESEARCH model does everything else — deciding what the product is,
+    # searching the web, writing the JSON, and the enrichment retry. The vision
+    # model is the wrong instrument for that work: it answered the narrow
+    # enrichment call with ~15 tokens, an empty object.
+    vision = vision_model or model_for_role(settings, "vision")
+    model = research_model or model_for_role(settings, "research")
+    enrich_model = model
+    effort = effort_for_role(settings, "research")
 
     # Read outright-stated facts from the user's text before the model sees it.
     # A chat capture has no rating slider, so "3,6 stars" is the only rating
@@ -221,6 +227,18 @@ async def run_capture(
     facts = extract_facts(text)
 
     prompt_parts = []
+    if image_b64:
+        label = await read_image(
+            settings, db, job_id=capture_id, model=vision,
+            image_b64=image_b64, image_media_type=image_media_type,
+        )
+        if label:
+            prompt_parts.append(label)
+            image_b64 = None   # the research model works from the transcription
+        else:
+            # Nothing legible to hand over as text: the vision model sees the
+            # photo itself and does the whole job, as it always did.
+            model = vision
     if (given_rating := stars if stars is not None else facts.rating) is not None:
         prompt_parts.append(f"Star rating given at capture: {given_rating}/5.")
     if facts.abv is not None:
@@ -228,7 +246,8 @@ async def run_capture(
     if text:
         prompt_parts.append(text)
     if not prompt_parts:
-        prompt_parts.append("Extract the tasting entry from the label photo.")
+        prompt_parts.append("Extract the tasting entry from the label photo."
+                            if image_b64 else "Extract the tasting entry from the label transcription above.")
     prompt_parts.append(f'This capture arrived via "{source}" — set source accordingly.')
     prompt_text = "\n".join(prompt_parts)
 
@@ -252,6 +271,7 @@ async def run_capture(
             text=prompt_text,
             image_b64=image_b64,
             image_media_type=image_media_type,
+            effort=effort,
             # Chat captures search too — common_notes wants vendor/review
             # grounding, not just label-photo gap-filling. Every provider
             # honours the flag; Mistral is the one that may still end up

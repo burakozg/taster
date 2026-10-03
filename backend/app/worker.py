@@ -25,6 +25,7 @@ from app.items_query import query_all_items
 from app.logging_setup import secret_state, setup_logging
 from app.lookup_service import run_lookup
 from app.detail_fetch import apply_details, fetch_details
+from app.model_roles import model_for_role
 from app.manage_service import run_manage_apply, run_manage_plan, run_repair_pairings_items
 from app.reconcile import reconcile_vault_edits
 from app.record_service import delete_record, update_record
@@ -53,25 +54,12 @@ async def process_job(job: dict, settings: Settings, db: CouchDBClient) -> dict:
     # (empty when nothing is set — the services fall back to config.yaml).
     overrides = job.get("model_overrides") or {}
 
-    def model_for() -> str:
-        """The model for this job, chosen by whether it actually carries an image.
-
-        A vision model earns its slot on the one job that needs it — reading a
-        label photo — and is a liability on every other, which is reasoning,
-        tool-calling and JSON work. Three of the four jobs that once shared a
-        single `capture_model` never touch an image: chat captures, maintenance
-        plans and regenerate-pairings. They ran on the vision model purely
-        because they arrived through the same setting, and it showed — the
-        maintenance planner narrated its plan instead of producing one.
-
-        Resolved to a concrete id here (admin override, else config.yaml) so
-        every service receives an explicit model rather than re-deriving the
-        default from a field name that no longer describes the split.
-        """
-        cfg = settings.models.claude
-        if payload.get("image_b64"):
-            return overrides.get("image_model") or cfg.image_model
-        return overrides.get("text_model") or cfg.text_model
+    def model_for(role: str) -> str:
+        """The model for a ROLE (vision / research / reasoning — model_roles.py):
+        the Admin tab's choice if set, else config.yaml. The worker and
+        taster-admin resolve through the same function, so an operation runs on
+        the same model whichever front end started it."""
+        return model_for_role(settings, role, overrides)
 
     if job["type"] == "capture_photo":
         result = await run_capture(
@@ -81,16 +69,15 @@ async def process_job(job: dict, settings: Settings, db: CouchDBClient) -> dict:
             stars=payload.get("stars"),
             image_b64=payload["image_b64"],
             image_media_type=payload.get("image_media_type"),
-            model_override=model_for(),
-            enrichment_model=overrides.get("text_model") or settings.models.claude.text_model,
+            vision_model=model_for("vision"),
+            research_model=model_for("research"),
         )
         return result.model_dump(mode="json")
 
     if job["type"] == "capture_chat":
         result = await run_capture(
             job["id"], settings, db, source="chat", text=payload["text"],
-            model_override=model_for(),
-            enrichment_model=overrides.get("text_model") or settings.models.claude.text_model,
+            research_model=model_for("research"),
         )
         return result.model_dump(mode="json")
 
@@ -100,7 +87,8 @@ async def process_job(job: dict, settings: Settings, db: CouchDBClient) -> dict:
             question=payload["question"],
             image_b64=payload.get("image_b64"),
             image_media_type=payload.get("image_media_type"),
-            model_override=model_for(),
+            vision_model=model_for("vision"),
+            reasoning_model=model_for("reasoning"),
         )
         return {"answer": result.answer}
 
@@ -109,7 +97,7 @@ async def process_job(job: dict, settings: Settings, db: CouchDBClient) -> dict:
         return await run_manage_plan(
             job["id"], settings, db,
             instruction=payload["instruction"],
-            model_override=model_for(),
+            model_override=model_for("reasoning"),
         )
 
     if job["type"] == "manage_apply":
@@ -128,7 +116,7 @@ async def process_job(job: dict, settings: Settings, db: CouchDBClient) -> dict:
             job["id"], settings, db,
             doc_ids=payload["doc_ids"],
             mode=payload.get("mode", "regenerate"),
-            model_override=model_for(),
+            model_override=model_for("research"),
         )
 
     if job["type"] == "fetch_details":
@@ -138,7 +126,8 @@ async def process_job(job: dict, settings: Settings, db: CouchDBClient) -> dict:
             doc_id=payload["doc_id"],
             fields=payload.get("fields"),
             overwrite=bool(payload.get("overwrite")),
-            model_override=model_for(),
+            model_override=model_for("research"),
+            reviewer_model=model_for("reasoning"),
         )
 
     if job["type"] == "details_apply":
@@ -346,23 +335,8 @@ async def run_worker_loop() -> None:
 
 
 async def _push_usage(relay: RelayClient) -> None:
-    """Hand the pending token-usage deltas to the relay (WRK-10).
-
-    Never raises: this is bookkeeping, and a relay hiccup must not fail a job
-    that already succeeded. An unacked batch simply stays in flight and goes
-    out again on the next attempt, under the same report id — so a push that
-    the relay actually applied can't be counted twice when the reply is lost.
-    """
-    report = usage.take_report()
-    if report is None:
-        return
-    report_id, rows = report
-    try:
-        await relay.push_usage(report_id, rows)
-    except Exception as e:  # noqa: BLE001 — retried on the next pass
-        logger.warning("usage push failed (will retry): %s", exc_label(e))
-    else:
-        usage.ack(report_id)
+    """Hand the pending token-usage deltas to the relay (WRK-10); see usage.push."""
+    await usage.push(relay)
 
 
 async def _report_failed(relay: RelayClient, job_id: str, exc: BaseException) -> None:

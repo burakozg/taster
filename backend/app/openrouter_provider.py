@@ -219,7 +219,7 @@ async def _run_tool_loop(
             call_out = getattr(call_usage, "completion_tokens", 0) or 0
             input_tokens += call_in
             output_tokens += call_out
-            usage.record("openrouter", model, call_in, call_out)
+            usage.record("openrouter", model, call_in, call_out, site=site)
 
         # OpenRouter can answer 200 with no `choices` and an `error` object
         # instead — an upstream provider refusing or falling over mid-route.
@@ -336,6 +336,7 @@ async def extract_structured(
     site: str = "capture",
     max_output_tokens: int | None = None,
     web_search_max_uses: int | None = None,
+    effort: str | None = None,
 ) -> dict:
     """Capture/manage path: returns the raw structured dict (validated by caller).
 
@@ -351,7 +352,7 @@ async def extract_structured(
         job_id=job_id,
         site=site,
         model=model,
-        effort=cfg.effort,
+        effort=effort or cfg.effort,
         max_tokens=max_output_tokens or cfg.max_tokens_capture,
         system_prompt=system_prompt,
         db=db,
@@ -378,6 +379,7 @@ async def answer_question(
     question: str,
     image_b64: str | None,
     image_media_type: str | None,
+    effort: str | None = None,
 ) -> str:
     """Lookup path: returns the conversational answer text."""
     cfg = settings.models.claude
@@ -387,7 +389,7 @@ async def answer_question(
         job_id=job_id,
         site="lookup",
         model=model,
-        effort=cfg.effort,
+        effort=effort or cfg.effort,
         max_tokens=cfg.max_tokens_lookup,
         system_prompt=system_prompt,
         db=db,

@@ -342,6 +342,7 @@ async def extract_structured(
     site: str = "capture",
     max_output_tokens: int | None = None,
     web_search_max_uses: int | None = None,  # noqa: ARG001 — see below
+    effort: str | None = None,  # noqa: ARG001 — Mistral has no per-call effort; parity only
 ) -> dict:
     """Capture/manage path: returns the raw structured dict (validated by caller).
     Tries the Conversations API (web search) when requested, falling back to
@@ -352,6 +353,7 @@ async def extract_structured(
     provider was resolved without knowing which one it got) — Mistral's
     `web_search` connector tool takes no per-call result cap, so there is
     nothing here to apply it to."""
+    usage.set_site(site)
     cfg = settings.models.claude
     client = get_mistral_client(settings)
     max_tokens = max_output_tokens or cfg.max_tokens_capture
@@ -403,9 +405,11 @@ async def answer_question(
     question: str,
     image_b64: str | None,
     image_media_type: str | None,
+    effort: str | None = None,  # noqa: ARG001 — parity with openrouter_provider
 ) -> str:
     """Lookup path: returns the conversational answer text. Tries the
     Conversations API (web search) first, falling back to chat completions."""
+    usage.set_site("lookup")
     cfg = settings.models.claude
     client = get_mistral_client(settings)
     try:

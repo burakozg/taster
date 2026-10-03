@@ -35,6 +35,7 @@ from app.couchdb_client import CouchDBClient
 from app.items_query import query_all_items
 from app.markdown import render_markdown
 from app.model_output import ModelOutputError
+from app.model_roles import effort_for_role, model_for_role
 from app.pairing_match import ground_repair_changes
 from app.providers import provider_for
 from app.schema import parse_any_note
@@ -350,6 +351,7 @@ async def _repair_batch(
         image_b64=None, image_media_type=None,
         use_web_search=True, output_schema=REPAIR_PAIRINGS_SCHEMA,
         site="repair", max_output_tokens=claude_cfg.max_tokens_manage,
+        effort=effort_for_role(settings, "research"),
         # Researches per-item, same rationale as run_manage_plan below.
         web_search_max_uses=claude_cfg.web_search_max_uses_manage,
     )
@@ -376,7 +378,7 @@ async def run_repair_pairings_items(
     mode="rematch":    keep the stored profiles/reasons, redo only the matching
                        against the vault as it is now. No model call."""
     claude_cfg = settings.models.claude
-    model = model_override or claude_cfg.text_model
+    model = model_override or model_for_role(settings, "research")
 
     records = await query_all_items(db)
     items = [r for r in records if r.get("type") != "pairing"]
@@ -451,7 +453,7 @@ async def run_manage_plan(
 ) -> dict:
     """Produce (do not apply) a plan of record changes for `instruction`."""
     claude_cfg = settings.models.claude
-    model = model_override or claude_cfg.text_model
+    model = model_override or model_for_role(settings, "reasoning")
 
     records = await query_all_items(db)
     prompt = (
@@ -478,6 +480,7 @@ async def run_manage_plan(
         output_schema=MANAGE_PLAN_SCHEMA,
         site="manage",
         max_output_tokens=claude_cfg.max_tokens_manage,
+        effort=effort_for_role(settings, "reasoning"),
         # A maintenance plan researches ONE FACT PER RECORD ("give every
         # whisky its ABV"), so the per-capture budget is the wrong scale here
         # — it would cap the plan at a few researched records however many

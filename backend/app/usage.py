@@ -30,6 +30,8 @@ and every mutation below happens between awaits.
 """
 from __future__ import annotations
 
+import contextlib
+import contextvars
 import logging
 import uuid
 from dataclasses import dataclass
@@ -51,8 +53,10 @@ class _Counts:
         self.output_tokens += output_tokens
 
 
-# Deltas not yet accepted by the relay, keyed (day, provider, model).
-_pending: dict[tuple[str, str, str], _Counts] = {}
+# Deltas not yet accepted by the relay, keyed (day, provider, model, site).
+# `site` is the TASK that made the call (capture, details, chat, …) — without it
+# the ledger says what a model cost but not what the money was spent on.
+_pending: dict[tuple[str, str, str, str], _Counts] = {}
 # The batch currently being pushed, held with a STABLE id until the relay acks
 # it — see take_report().
 _in_flight: tuple[str, list[dict[str, Any]]] | None = None
@@ -64,12 +68,33 @@ def _today() -> str:
     return datetime.now().date().isoformat()
 
 
-def record(provider: str, model: str, input_tokens: int, output_tokens: int) -> None:
+# The task a call belongs to, for providers whose loops don't carry it as an
+# argument. Set by the provider entry points via site_scope().
+_current_site: contextvars.ContextVar[str] = contextvars.ContextVar("usage_site", default="")
+
+
+@contextlib.contextmanager
+def site_scope(site: str):
+    token = _current_site.set(site)
+    try:
+        yield
+    finally:
+        _current_site.reset(token)
+
+
+def set_site(site: str) -> None:
+    """Tag the calls that follow in this task. For entry points that can't wrap
+    their body in site_scope(); the next entry point simply overwrites it."""
+    _current_site.set(site)
+
+
+def record(provider: str, model: str, input_tokens: int, output_tokens: int, site: str | None = None) -> None:
     """Book one model API call. Call this wherever a response's usage is read,
     on every provider path — that placement is the whole contract (WRK-10)."""
     day = _today()
+    site = site if site is not None else _current_site.get()
     counts = dict(calls=1, input_tokens=input_tokens or 0, output_tokens=output_tokens or 0)
-    _pending.setdefault((day, provider, model), _Counts()).add(**counts)
+    _pending.setdefault((day, provider, model, site), _Counts()).add(**counts)
     _days.setdefault(day, {}).setdefault((provider, model), _Counts()).add(**counts)
 
 
@@ -134,10 +159,10 @@ def take_report() -> tuple[str, list[dict[str, Any]]] | None:
         return None
     rows = [
         {
-            "day": day, "provider": provider, "model": model,
+            "day": day, "provider": provider, "model": model, "site": site,
             "calls": c.calls, "input_tokens": c.input_tokens, "output_tokens": c.output_tokens,
         }
-        for (day, provider, model), c in sorted(_pending.items())
+        for (day, provider, model, site), c in sorted(_pending.items())
     ]
     _pending.clear()
     _in_flight = (str(uuid.uuid4()), rows)
@@ -158,3 +183,21 @@ def pending_calls() -> int:
     as a number that only ever climbs."""
     in_flight = sum(r["calls"] for r in _in_flight[1]) if _in_flight else 0
     return sum(c.calls for c in _pending.values()) + in_flight
+
+
+async def push(relay: Any) -> None:
+    """Hand the pending deltas to the relay. Never raises: this is bookkeeping,
+    and a relay hiccup must not fail work that already succeeded. An unacked batch
+    stays in flight and goes out again under the same report id, so a push the
+    relay applied but whose reply was lost cannot be counted twice. Used by the
+    worker and by taster-admin — every process that spends tokens reports them."""
+    report = take_report()
+    if report is None:
+        return
+    report_id, rows = report
+    try:
+        await relay.push_usage(report_id, rows)
+    except Exception as e:  # noqa: BLE001 — retried on the next pass
+        logger.warning("usage push failed (will retry): %s", type(e).__name__ if not str(e) else e)
+    else:
+        ack(report_id)

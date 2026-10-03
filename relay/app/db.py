@@ -95,6 +95,21 @@ def init_db(db_path: str) -> None:
             -- Ids of usage batches already added, so a retry of a push whose
             -- response was lost doesn't double-count. Short-lived: pruned with
             -- the jobs (see prune_old_jobs).
+            -- The same spend broken down by TASK (capture, details, chat, …). A second
+            -- table rather than a new key on usage_daily: that one's primary key
+            -- cannot change in place, and rows from before tasks were tagged
+            -- would have nowhere to go. Rows without a task are booked as ''.
+            CREATE TABLE IF NOT EXISTS usage_by_task (
+                day TEXT NOT NULL,
+                site TEXT NOT NULL,
+                provider TEXT NOT NULL,
+                model TEXT NOT NULL,
+                calls INTEGER NOT NULL DEFAULT 0,
+                input_tokens INTEGER NOT NULL DEFAULT 0,
+                output_tokens INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY (day, site, provider, model)
+            );
+
             CREATE TABLE IF NOT EXISTS usage_reports (
                 report_id TEXT PRIMARY KEY,
                 received_at TEXT NOT NULL
@@ -254,6 +269,16 @@ def add_usage(report_id: str, rows: list[dict[str, Any]]) -> bool:
                     (r["day"], r["provider"], r["model"], r["calls"],
                      r["input_tokens"], r["output_tokens"], now),
                 )
+                _conn.execute(
+                    "INSERT INTO usage_by_task (day, site, provider, model, calls, input_tokens, output_tokens) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?) "
+                    "ON CONFLICT(day, site, provider, model) DO UPDATE SET "
+                    "calls = calls + excluded.calls, "
+                    "input_tokens = input_tokens + excluded.input_tokens, "
+                    "output_tokens = output_tokens + excluded.output_tokens",
+                    (r["day"], r.get("site") or "", r["provider"], r["model"], r["calls"],
+                     r["input_tokens"], r["output_tokens"]),
+                )
         except Exception:
             _conn.rollback()
             raise
@@ -287,6 +312,21 @@ def usage_by_day(days: int) -> list[dict[str, Any]]:
             "input_tokens": row["input_tokens"], "output_tokens": row["output_tokens"],
         })
     return list(by_day.values())
+
+
+def usage_by_task(days: int) -> list[dict[str, Any]]:
+    """What each task spent over the last `days` days that have task-tagged
+    usage, per model, biggest first. Usage recorded before tasks were tagged is
+    not here (it is in the daily totals); this view starts when tagging did."""
+    with _lock:
+        rows = _conn.execute(
+            "SELECT site, provider, model, SUM(calls) AS calls, SUM(input_tokens) AS input_tokens, "
+            "SUM(output_tokens) AS output_tokens FROM usage_by_task "
+            "WHERE day IN (SELECT DISTINCT day FROM usage_by_task ORDER BY day DESC LIMIT ?) "
+            "GROUP BY site, provider, model ORDER BY output_tokens DESC",
+            (days,),
+        ).fetchall()
+    return [dict(r) for r in rows]
 
 
 def usage_totals() -> dict[str, Any]:

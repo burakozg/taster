@@ -589,8 +589,11 @@ function initSearch() {
 
 function initAdmin() {
   const statusEl = document.getElementById("admin-status");
-  const imageSel = document.getElementById("admin-image-model");
-  const textSel = document.getElementById("admin-text-model");
+  const roleSels = {
+    vision_model: document.getElementById("admin-vision-model"),
+    research_model: document.getElementById("admin-research-model"),
+    reasoning_model: document.getElementById("admin-reasoning-model"),
+  };
   const saveBtn = document.getElementById("admin-save");
   const saveStatus = document.getElementById("admin-save-status");
   const jobsEl = document.getElementById("admin-jobs");
@@ -615,8 +618,7 @@ function initAdmin() {
       apiFetch("/admin/models"),
       apiFetch("/admin/settings"),
     ]);
-    fillSelect(imageSel, models, settings.image_model);
-    fillSelect(textSel, models, settings.text_model);
+    for (const [key, sel] of Object.entries(roleSels)) fillSelect(sel, models, settings[key]);
   }
 
   async function loadStatus() {
@@ -673,8 +675,35 @@ function initAdmin() {
     return `${(n / 1e6).toFixed(1)}M`;
   }
 
+  // Spend per task and model, so a model role can be judged on what its work
+  // actually costs rather than on its list price.
+  const TASK_LABELS = {
+    capture: "Capture", vision: "Reading photos", details: "Fetch details", chat: "Chat",
+    repair: "Pairings", manage: "Maintain", lookup: "Ask AI", "": "Untagged",
+  };
+  function renderTasks(rows) {
+    const el = document.getElementById("usage-tasks");
+    el.innerHTML = "";
+    if (!rows.length) { el.innerHTML = '<li class="hint">Nothing recorded by task yet.</li>'; return; }
+    const peak = Math.max(...rows.map((r) => r.input_tokens + r.output_tokens), 1);
+    for (const r of rows) {
+      const total = r.input_tokens + r.output_tokens;
+      const li = document.createElement("li");
+      li.title = `${r.calls} call(s): ${r.input_tokens.toLocaleString()} in, ${r.output_tokens.toLocaleString()} out`;
+      li.innerHTML = `
+        <span class="usage-day"></span>
+        <span class="usage-bar"><span class="usage-bar-fill"></span></span>
+        <span class="usage-num"></span>`;
+      li.querySelector(".usage-day").textContent = `${TASK_LABELS[r.site] ?? r.site} · ${r.model.split("/").pop()}`;
+      li.querySelector(".usage-bar-fill").style.width = `${Math.max(2, (total / peak) * 100)}%`;
+      li.querySelector(".usage-num").textContent = `${compactNum(total)} · ${r.calls}×`;
+      el.appendChild(li);
+    }
+  }
+
   async function loadUsage() {
-    const { days, totals } = await apiFetch("/admin/usage?days=14");
+    const { days, totals, by_task: byTask = [] } = await apiFetch("/admin/usage?days=14");
+    renderTasks(byTask);
     const latestEl = document.getElementById("usage-latest");
     const daysEl = document.getElementById("usage-days");
     const totalEl = document.getElementById("usage-total");
@@ -802,8 +831,9 @@ function initAdmin() {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          image_model: imageSel.value || null,
-          text_model: textSel.value || null,
+          vision_model: roleSels.vision_model.value || null,
+          research_model: roleSels.research_model.value || null,
+          reasoning_model: roleSels.reasoning_model.value || null,
         }),
       });
       saveStatus.textContent = "Saved — applies from the next job.";

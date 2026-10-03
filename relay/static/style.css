@@ -878,3 +878,9 @@ button.danger:hover, .rating-clear.danger:hover { color: #fff; background: var(-
 .success-card.tappable { cursor: pointer; }
 .success-card.tappable:active { background: var(--surface-2); }
 .success-card .sc-chev { margin-left: auto; align-self: center; color: var(--text-dim); font-size: 1.4rem; line-height: 1; }
+
+/* "By task" rows carry a label and a "12K · 3×" figure instead of a date and a
+   short total, so their grid gives the label and number more room. */
+#usage-tasks li { grid-template-columns: minmax(7rem, 38%) 1fr 5.5rem; }
+#usage-tasks .usage-day { overflow-wrap: anywhere; }
+.usage-sub { margin: var(--s4) 0 var(--s1); font-size: 0.9rem; }

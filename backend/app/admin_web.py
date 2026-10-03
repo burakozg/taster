@@ -54,7 +54,10 @@ from app.detail_fetch import FETCHABLE, apply_details, fetch_details
 from app.items_query import query_all_items
 from app.logging_setup import setup_logging
 from app.manage_service import run_repair_pairings_items
+from app.model_roles import admin_overrides, model_for_role
 from app.record_service import update_record
+from app.relay_client import RelayClient
+from app import usage
 
 logger = logging.getLogger("admin")
 
@@ -108,14 +111,20 @@ async def _runner(app: FastAPI) -> None:
         job = jobs.by_id[job_id]
         job["status"] = "processing"
         try:
+            # The Admin tab's model choices, fetched fresh (briefly cached) — the
+            # same ones the worker receives with a job from the phone app.
+            ov = await admin_overrides(app.state.relay)
             if job["kind"] == "details":
                 job.update(status="done", result=await fetch_details(
                     job_id, settings, db, doc_id=job["doc_ids"][0],
                     fields=job.get("fields"), overwrite=job.get("overwrite", False),
+                    model_override=model_for_role(settings, "research", ov),
+                    reviewer_model=model_for_role(settings, "reasoning", ov),
                 ))
                 continue
             result = await run_repair_pairings_items(
                 job_id, settings, db, doc_ids=job["doc_ids"], mode=job["mode"],
+                model_override=model_for_role(settings, "research", ov),
             )
             job.update(status="done", result=result)
         except Exception as e:  # noqa: BLE001 — a failed chunk must not stop the queue
@@ -131,16 +140,29 @@ def create_app() -> FastAPI:
         user=settings.couchdb_user, password=settings.couchdb_password,
     )
 
+    relay = RelayClient(settings)
+
+    async def usage_loop() -> None:
+        # Everything this process spends goes to the same ledger as the worker's.
+        # Without this its calls (chat, detail workers, pairings) were booked in
+        # memory and never reported.
+        while True:
+            await asyncio.sleep(60)
+            await usage.push(relay)
+
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         app.state.runner = asyncio.create_task(_runner(app))
+        app.state.usage_task = asyncio.create_task(usage_loop())
         try:
             yield
         finally:
             app.state.runner.cancel()
+            app.state.usage_task.cancel()
+            await usage.push(relay)   # whatever was booked since the last tick
 
     app = FastAPI(title="Tasting Log data", lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
-    app.state.settings, app.state.db, app.state.jobs = settings, db, Jobs()
+    app.state.settings, app.state.db, app.state.jobs, app.state.relay = settings, db, Jobs(), relay
 
     @app.get("/", include_in_schema=False)
     async def page() -> FileResponse:
@@ -231,7 +253,11 @@ def create_app() -> FastAPI:
         async def go() -> None:
             job = jobs.by_id[job_id]
             try:
-                job.update(status="done", result=await run_chat(job_id, settings, db, messages=body.messages))
+                ov = await admin_overrides(relay)
+                job.update(status="done", result=await run_chat(
+                    job_id, settings, db, messages=body.messages,
+                    model_override=model_for_role(settings, "reasoning", ov),
+                ))
             except Exception as e:  # noqa: BLE001 — shown in the chat, not swallowed
                 logger.exception("chat %s failed", job_id)
                 job.update(status="failed", error=str(e) or type(e).__name__)

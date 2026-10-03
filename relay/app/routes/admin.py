@@ -20,6 +20,7 @@ from app.db import (
     list_recent_jobs,
     set_admin_settings,
     usage_by_day,
+    usage_by_task,
     usage_totals,
 )
 from app.models_catalog import (
@@ -29,6 +30,8 @@ from app.models_catalog import (
     prune_unknown_models,
 )
 from app.rate_limit import rate_limit
+
+ROLE_SETTINGS = ("vision_model", "research_model", "reasoning_model")
 
 router = APIRouter(
     prefix="/admin",
@@ -48,23 +51,22 @@ async def get_settings() -> dict:
     # id the dropdown can no longer render — matches what the worker will
     # actually receive (see routes/worker.py).
     s = migrate_model_settings(prune_unknown_models(get_admin_settings()))
-    return {
-        "image_model": s.get("image_model"),
-        "text_model": s.get("text_model"),
-    }
+    return {role: s.get(role) for role in ROLE_SETTINGS}
 
 
 class AdminSettings(BaseModel):
     # None = clear the override, fall back to the worker's config.yaml.
-    # image_model applies to jobs that carry a photo; text_model covers
-    # everything else (see worker.process_job's model_for).
-    image_model: str | None = None
-    text_model: str | None = None
+    # Three roles (see backend model_roles.py): vision reads photos only;
+    # research does web-search + JSON lookups; reasoning does judgement and
+    # long-context work.
+    vision_model: str | None = None
+    research_model: str | None = None
+    reasoning_model: str | None = None
 
 
 @router.put("/settings")
 async def put_settings(body: AdminSettings) -> dict:
-    for field in ("image_model", "text_model"):
+    for field in ROLE_SETTINGS:
         value = getattr(body, field)
         if value is not None and value not in MODEL_IDS:
             raise HTTPException(status_code=400, detail=f"{field}: unknown model id {value!r}")
@@ -86,7 +88,7 @@ async def usage(days: int = Query(default=14, ge=1, le=365)) -> dict:
     Days are the worker's local dates (see routes/worker.py) — the relay only
     ever stores and returns the strings it was given, so this endpoint has no
     timezone of its own to get wrong."""
-    return {"days": usage_by_day(days), "totals": usage_totals()}
+    return {"days": usage_by_day(days), "totals": usage_totals(), "by_task": usage_by_task(days)}
 
 
 @router.get("/status")

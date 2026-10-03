@@ -672,3 +672,33 @@ approved *and* fill an empty field, and `apply_details` writes the
 ticked ones (from the app via the `details_apply` job, from the page via
 `POST /api/details/apply`), keeping the old values in the shared history for undo. Personal fields
 (rating, notes, stock, price, brew settings) are not fetchable.
+
+## Model roles
+
+Work is assigned to a model by **role**, not by one global "text model"
+(`backend/app/model_roles.py`):
+
+| Role | Used for | Why separate |
+|---|---|---|
+| `vision` | reading a photo or label into text — nothing else | the only job that needs images |
+| `research` | capture extraction + enrichment, fetch-details workers, pairing profiles | many calls, web search + strict JSON, cost matters |
+| `reasoning` | chat, the fetch-details reviewer, Maintain plans, Ask AI answers | few calls, judgement and long context |
+
+Resolution, most specific first: the Admin tab's choice for the role → its legacy
+`image_model`/`text_model` choice → `config.yaml`'s `{role}_model` → its legacy
+`image_model`/`text_model`. All three default to the old pair, so setting nothing
+changes nothing. The relay folds a stored legacy choice into roles when it serves
+settings. One function resolves it for both the worker (choices arrive with each
+job) and taster-admin (it fetches them from the relay's `/worker/settings`, cached
+a minute), so an operation runs on the same model from either front end.
+`effort_research` / `effort_reasoning` set reasoning effort per role.
+
+**Photos are read, then reasoned about.** `image_reader.read_image` has the vision
+model transcribe what a photo shows and the text on it, verbatim; the research (or,
+for Ask AI, reasoning) model works from that text. A photo with no legible text
+falls back to the vision model doing the whole job, as before.
+
+**Spend is tagged by task.** Each model call books its task (`capture`, `vision`,
+`details`, `chat`, `repair`, `manage`, `lookup`) in the ledger — in both the worker
+and taster-admin, which pushes its own usage to the relay — and the Admin tab's
+"By task" list shows it. That is the data to judge a role's model against.

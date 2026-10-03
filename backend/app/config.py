@@ -42,6 +42,16 @@ class ClaudeConfig(BaseModel):
     # vision-capable entry in the catalog; swap to a different `vendor/model`
     # id, or a mistral-*/ministral-* one, in config.yaml if you prefer.
     image_model: str = "qwen/qwen3-vl-235b-a22b-instruct"
+    # Role-based assignment (see model_roles.py). Each defaults to the legacy
+    # pair above — vision <- image_model, research and reasoning <- text_model —
+    # so setting none of these changes nothing. Set one to give that kind of
+    # work its own model; the Admin tab's choice still overrides all of them.
+    vision_model: str | None = None      # reading a label or photo, nothing else
+    research_model: str | None = None    # web-search + JSON: enrichment, detail workers, pairings
+    reasoning_model: str | None = None   # judgement and long context: chat, reviewer, plans, answers
+    # Per-role reasoning effort; None = the global `effort` below.
+    effort_research: str | None = None
+    effort_reasoning: str | None = None
     # Everything without an image — chat captures, plain lookups, maintenance
     # plans, regenerate-pairings. These are reasoning/tool/JSON jobs, and a
     # vision-tuned model is the wrong instrument for all of them.
