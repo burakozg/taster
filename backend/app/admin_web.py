@@ -12,6 +12,9 @@ minute-old snapshot, and nothing about it is exposed to the internet.
   GET  /api/categories     category + edit-field registry (same as the PWA's)
   POST /api/record/update  {doc_id, fields}   edit one record (synchronous)
   POST /api/pairings       {doc_ids | all, mode}  start pairing jobs
+  POST /api/details        {doc_ids, fields?, overwrite?}  look up missing details
+                           (one job per item; PROPOSALS only, nothing is written)
+  POST /api/details/apply  {doc_id, fields}   write the proposals a person accepted
   GET  /api/jobs?ids=      progress of those jobs
   GET  /api/history        recent pairing changes, each with what it replaced
 
@@ -45,6 +48,7 @@ from pydantic import BaseModel
 from app.categories import categories_metadata
 from app.config import get_settings
 from app.couchdb_client import CouchDBClient
+from app.detail_fetch import FETCHABLE, fetch_details
 from app.items_query import query_all_items
 from app.logging_setup import setup_logging
 from app.manage_service import run_repair_pairings_items
@@ -66,6 +70,17 @@ class PairingsBody(BaseModel):
     doc_ids: list[str] | None = None
     all: bool = False
     mode: Literal["regenerate", "rematch"] = "regenerate"
+
+
+class DetailsBody(BaseModel):
+    doc_ids: list[str]
+    fields: list[str] | None = None
+    overwrite: bool = False
+
+
+class ApplyBody(BaseModel):
+    doc_id: str
+    fields: dict[str, Any]
 
 
 class Jobs:
@@ -114,12 +129,19 @@ async def _runner(app: FastAPI) -> None:
         job = jobs.by_id[job_id]
         job["status"] = "processing"
         try:
+            if job["kind"] == "details":
+                job.update(status="done", result=await fetch_details(
+                    job_id, settings, db, doc_id=job["doc_ids"][0],
+                    fields=job.get("fields"), overwrite=job.get("overwrite", False),
+                ))
+                continue
             result = await run_repair_pairings_items(
                 job_id, settings, db, doc_ids=job["doc_ids"], mode=job["mode"],
             )
             job.update(status="done", result=result)
             _append_history([
                 {
+                    "kind": "pairings",
                     "job_id": job_id, "at": datetime.now(timezone.utc).isoformat(),
                     "doc_id": r["doc_id"], "name": r.get("name"), "mode": result["mode"],
                     "previous": r["previous"],
@@ -165,7 +187,8 @@ def create_app() -> FastAPI:
 
     @app.get("/api/categories")
     async def categories() -> dict:
-        return {"categories": categories_metadata()}
+        # `fetchable`: which fields "Fetch details" can look up, per type.
+        return {"categories": categories_metadata(), "fetchable": {t: list(f) for t, f in FETCHABLE.items()}}
 
     @app.post("/api/record/update")
     async def record_update(body: UpdateBody) -> dict:
@@ -196,11 +219,50 @@ def create_app() -> FastAPI:
         for n in range(0, len(ids), size):
             chunk = ids[n:n + size]
             job_id = str(uuid.uuid4())
-            jobs.by_id[job_id] = {"status": "queued", "doc_ids": chunk, "mode": body.mode, "result": None, "error": None}
+            jobs.by_id[job_id] = {"kind": "pairings", "status": "queued", "doc_ids": chunk, "mode": body.mode, "result": None, "error": None}
             jobs.queue.put_nowait(job_id)
             out.append({"job_id": job_id, "doc_ids": chunk})
         logger.info("pairings: queued %d item(s) in %d job(s) mode=%s", len(ids), len(out), body.mode)
         return {"jobs": out, "items": len(ids)}
+
+    @app.post("/api/details", status_code=202)
+    async def details(body: DetailsBody) -> dict:
+        ids = list(dict.fromkeys(body.doc_ids))
+        if not ids:
+            raise HTTPException(status_code=400, detail="no items selected")
+        if len(ids) > 100:
+            raise HTTPException(status_code=400, detail="at most 100 items per request")
+        jobs: Jobs = app.state.jobs
+        out = []
+        for doc_id in ids:
+            job_id = str(uuid.uuid4())
+            jobs.by_id[job_id] = {"kind": "details", "status": "queued", "doc_ids": [doc_id],
+                                  "fields": body.fields, "overwrite": body.overwrite, "result": None, "error": None}
+            jobs.queue.put_nowait(job_id)
+            out.append({"job_id": job_id, "doc_ids": [doc_id]})
+        logger.info("details: queued %d item(s) fields=%s overwrite=%s", len(ids), body.fields or "all-empty", body.overwrite)
+        return {"jobs": out, "items": len(ids)}
+
+    @app.post("/api/details/apply")
+    async def details_apply(body: ApplyBody) -> dict:
+        doc = await db.get_document(body.doc_id)
+        if doc is None:
+            raise HTTPException(status_code=404, detail="record not found")
+        allowed = set(FETCHABLE.get(doc.get("type", ""), ()))
+        bad = [k for k in body.fields if k not in allowed]
+        if bad or not body.fields:
+            raise HTTPException(status_code=400, detail=f"not a fetchable field: {', '.join(bad) or '(none given)'}")
+        previous = {k: doc.get(k) for k in body.fields}
+        try:
+            await update_record(db, body.doc_id, body.fields)
+        except Exception as e:  # noqa: BLE001 — the schema's reason is what the user needs
+            raise HTTPException(status_code=422, detail=str(e)) from e
+        name = " — ".join(x for x in (doc.get("producer"), doc.get("name")) if x) or body.doc_id
+        _append_history([{
+            "kind": "fields", "at": datetime.now(timezone.utc).isoformat(), "doc_id": body.doc_id,
+            "name": name, "mode": "details", "previous": previous, "applied": body.fields,
+        }])
+        return {"ok": True, "applied": list(body.fields)}
 
     @app.get("/api/jobs")
     async def job_status(ids: str = Query(...)) -> dict:

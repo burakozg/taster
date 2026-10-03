@@ -635,3 +635,20 @@ http:
 `./deploy check` (with `ADMIN_HOSTNAME` set in `.deploy.env`) requests the
 hostname without a session and expects the login redirect — a 200 would mean the
 gate is missing.
+
+### Fetch details (worker per field, orchestrator on top)
+
+`backend/app/detail_fetch.py`, behind the "Fetch details" buttons. One item is
+one job; inside it every empty field is its own narrow web-search call (a
+*worker*), run three at a time. A worker must return a source URL and a
+verbatim quote, or "not found" — it never answers from memory. The
+*orchestrator* then, with no model: fetches the source page itself (public
+hosts only) and checks the quote is on it, checks hard facts appear in their own
+quote, coerces the value to the field's type and validates the note schema.
+Finally one model call reviews the whole set for the same product/edition and
+for consistency with the record; it can flag a proposal, never change or
+un-reject one. **Nothing is written by the job** — the page shows each proposal
+with its evidence and verdicts, pre-ticks only those that are verified *and*
+approved *and* fill an empty field, and `POST /api/details/apply` writes the
+ticked ones, keeping the old values in `history.jsonl` for undo. Personal fields
+(rating, notes, stock, price, brew settings) are not fetchable.
