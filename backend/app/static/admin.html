@@ -154,6 +154,42 @@
     .crow .n { color:var(--dim); font-variant-numeric:tabular-nums; }
     .irow { display:grid; grid-template-columns:auto 1fr auto; gap:8px; padding:6px 4px; border-top:1px solid var(--border); cursor:pointer; align-items:baseline; }
     .irow:hover { background:var(--surface-2); } .irow .sub { color:var(--dim); font-size:12px; }
+    .viz { --c-comp:#2a78d6; --c-drink:#eb6834; --edge:rgba(82,81,78,.30); --grid-text:#fff;
+      --q0:#cde2fb; --q1:#9ec5f4; --q2:#6da7ec; --q3:#3987e5; --q4:#2a78d6; --q5:#1c5cab; --q6:#104281;
+      --qt0:#0b0b0b; --qt1:#0b0b0b; --qt2:#0b0b0b; --qt3:#0b0b0b; --qt4:#fff; --qt5:#fff; --qt6:#fff; }
+    @media (prefers-color-scheme: dark) { .viz { --c-comp:#3987e5; --c-drink:#d95926; --edge:rgba(195,194,183,.26);
+      --q0:#1d3556; --q1:#244d86; --q2:#2a65b8; --q3:#3987e5; --q4:#6da7ec; --q5:#9ec5f4; --q6:#cde2fb;
+      --qt0:#fff; --qt1:#fff; --qt2:#fff; --qt3:#0b0b0b; --qt4:#0b0b0b; --qt5:#0b0b0b; --qt6:#0b0b0b; } }
+    .pgmain { display:grid; grid-template-columns:minmax(0,1fr) 330px; gap:14px; align-items:start; margin-bottom:12px; }
+    @media (max-width:1100px) { .pgmain { grid-template-columns:1fr; } }
+    .pgdia { margin:0; padding:10px 6px 6px; } .pgside .card { margin:0; position:sticky; top:8px; }
+    .pglegend { display:flex; gap:18px; flex-wrap:wrap; align-items:center; font-size:12px; padding:0 8px 8px; }
+    i.sw { display:inline-block; width:10px; height:10px; border-radius:2px; margin-right:6px; vertical-align:-1px; } i.sw.comp { background:var(--c-comp); } i.sw.drink { background:var(--c-drink); }
+    .pgsvgwrap { position:relative; }
+    #pg-svg { display:block; width:100%; height:auto; }
+    #pg-svg text { font:11px -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; fill:var(--text); }
+    #pg-svg text.dim, #pg-svg .grp { fill:var(--dim); } #pg-svg .grp { font-size:10px; letter-spacing:.06em; text-transform:uppercase; }
+    #pg-svg .coltitle { font-size:12px; font-weight:600; }
+    #pg-svg .node { cursor:pointer; }
+    /* .bar is the visible mark, .hit an invisible, larger click target. They must not share a
+       selector: a rule on "rect" painted the hit area solid (higher specificity than .hit). */
+    #pg-svg .node .bar { stroke:var(--surface); stroke-width:2; }
+    #pg-svg .node.comp .bar { fill:var(--c-comp); } #pg-svg .node.drink .bar { fill:var(--c-drink); }
+    #pg-svg .node .hit { fill:transparent; stroke:none; pointer-events:all; }
+    #pg-svg .edge { fill:none; stroke:var(--edge); stroke-width:1; stroke-linecap:round; transition:opacity .12s; }
+    #pg-svg .edge.mutual { stroke-width:2.2; }
+    #pg-svg.act .edge { opacity:.06; } #pg-svg.act .edge.on { opacity:1; stroke-width:1.8; }
+    #pg-svg.act .edge.on.mutual { stroke-width:3; }
+    #pg-svg.act.side-comp .edge.on { stroke:var(--c-comp); } #pg-svg.act.side-drink .edge.on { stroke:var(--c-drink); }
+    #pg-svg.act .node { opacity:.32; } #pg-svg.act .node.partner, #pg-svg.act .node.active { opacity:1; }
+    #pg-svg .node.active .bar { stroke:var(--text); } #pg-svg .node.partner text { font-weight:600; }
+    .hm { border-collapse:separate; border-spacing:3px; } .hm th { font-size:12px; font-weight:600; padding:2px 8px; text-align:center; background:none; position:static; cursor:default; }
+    .hm th.rl { text-align:right; } .hm td { min-width:84px; height:44px; text-align:center; border-radius:6px; font-weight:600; cursor:pointer; padding:0; border:2px solid transparent; }
+    .hm td.zero { background:var(--surface-2); color:var(--dim); font-weight:400; cursor:default; }
+    .hm td.on { border-color:var(--text); } .hm td:hover:not(.zero) { border-color:var(--text); }
+    .hm .corner { font-size:11px; color:var(--dim); font-weight:400; }
+    .prow { display:grid; grid-template-columns:auto 1fr auto; gap:8px; padding:7px 4px; border-top:1px solid var(--border); cursor:pointer; align-items:baseline; }
+    .prow:hover { background:var(--surface-2); } .prow .why { grid-column:2 / 4; color:var(--dim); font-size:12px; white-space:normal; }
     .norows { margin:4px 0 0 18px; padding:0; font-size:12px; } .norows li { margin:1px 0; }
     .val { font-weight:600; } .old { color:var(--dim); text-decoration:line-through; }
   </style>
@@ -163,6 +199,7 @@
   <nav id="tabs">
     <button data-tab="data" class="on">Data</button>
     <button data-tab="map">Map</button>
+    <button data-tab="pairs">Pairings</button>
     <button data-tab="changes">Changes</button>
     <button data-tab="maintain">Maintain (AI)</button>
     <button data-tab="sync">Sync</button>
@@ -267,6 +304,31 @@
       </aside>
     </div>
     <p class="dim">Click a highlighted country to list its items. Darker means more items. Scroll to zoom, drag to move; the country list works too. Map: Natural Earth (public domain).</p>
+  </section>
+
+  <section id="tab-pairs" class="tabpanel" hidden>
+    <div class="bar">
+      <span id="pg-summary" class="dim"></span>
+      <span class="sp"></span>
+      <button id="pg-clear" hidden>Show all types</button>
+    </div>
+
+    <div class="card viz">
+      <h3>Which types pair with which</h3>
+      <p class="dim">Number of suggested pairings between each companion type (rows) and drink type (columns). Click a cell to look at just that combination.</p>
+      <div id="pg-grid"></div>
+    </div>
+
+    <div class="pgmain">
+      <div class="card viz pgdia">
+        <div class="pglegend"><span><i class="sw comp"></i>Companions — cigar, pipe, chocolate</span><span><i class="sw drink"></i>Drinks — whisky, coffee, beer, rakı</span><span class="dim">Each line is a suggested pairing; a thick line means each suggested the other. The number is how many pairings that item has.</span></div>
+        <div class="pgsvgwrap"><svg id="pg-svg" role="img" aria-label="Suggested pairings between companions on the left and drinks on the right"></svg><div id="pg-tip" class="tip" hidden></div></div>
+      </div>
+      <aside class="pgside"><div id="pg-detail" class="card"></div></aside>
+    </div>
+
+    <details id="pg-tabledet" class="card"><summary><b>Show as a table</b></summary><div id="pg-table" class="tablewrap" style="margin-top:8px"></div></details>
+    <p class="dim">Hover an item to preview its pairings, click to keep them highlighted. Only items you rated 3.7 stars or more can be a match, so a few favourites collect most of the lines. Pairings you have actually tried are not logged yet; this shows suggestions.</p>
   </section>
 
   <section id="tab-changes" class="tabpanel" hidden>
@@ -407,6 +469,7 @@ async function load() {
   say("");
   render();
   if (mp && mp.world && !$("tab-map").hidden) renderMap();
+  if (typeof renderPairs === "function" && !$("tab-pairs").hidden) renderPairs();
 }
 
 function shown() {
@@ -1011,7 +1074,7 @@ async function portalJob(jobId, { onTick, timeoutMs = 900000 } = {}) {
 }
 
 // ---- tabs ----
-const TABS = ["data", "map", "changes", "maintain", "sync", "models", "usage", "logs"];
+const TABS = ["data", "map", "pairs", "changes", "maintain", "sync", "models", "usage", "logs"];
 const loaded = new Set();
 function showTab(name) {
   if (!TABS.includes(name)) name = "data";
@@ -1346,7 +1409,213 @@ $("mp-reset").onclick = () => mp.world && setViewBox([0, 0, mp.world.width, mp.w
   svg.addEventListener("pointerleave", () => { tip.hidden = true; });
 })();
 
+// ---- Pairings: a two-sided link diagram ----
+// Pairings are always companion <-> drink, so the data is a bipartite graph and a
+// two-column layout loses nothing: companions on the left, drinks on the right, a curve
+// per suggested pairing. A force-directed network would be a hairball here and an
+// item-by-item matrix too wide to read. Colour carries ONE thing — which side an item
+// is on — so two hues cover it; the item's type is its group, label and icon.
+const pg = { sel: null, hover: null, pair: null, g: null };
+
+function sideOf(type) { return state.cats.find((c) => c.type === type)?.pair_group || null; }
+
+// Every suggested pairing becomes one companion<->drink edge. If each of the two
+// suggested the other, it is one edge marked mutual (drawn thicker), not two lines.
+function buildGraph() {
+  const byId = Object.fromEntries(state.items.map((i) => [i._id, i]));
+  const edges = new Map();
+  for (const it of state.items) {
+    const mine = sideOf(it.type);
+    if (!mine) continue;
+    for (const p of it.pairings_suggested || []) {
+      for (const m of p.matches || []) {
+        const other = byId[m.item];
+        if (!other || sideOf(other.type) === mine || !sideOf(other.type)) continue;
+        const [comp, drink] = mine === "companion" ? [it, other] : [other, it];
+        const key = comp._id + "|" + drink._id;
+        const e = edges.get(key) || { comp: comp._id, drink: drink._id, by: [], why: {} };
+        if (!e.by.includes(it._id)) e.by.push(it._id);
+        e.why[it._id] = { profile: p.profile, reason: p.reason };
+        edges.set(key, e);
+      }
+    }
+  }
+  let list = [...edges.values()];
+  if (pg.pair) list = list.filter((e) => byId[e.comp].type === pg.pair[0] && byId[e.drink].type === pg.pair[1]);
+  return { byId, edges: list };
+}
+
+// Order each column: groups follow the category registry; inside a group, items are
+// ordered by the average position of their partners (a few sweeps), which untangles
+// the lines far better than alphabetical or by-degree order would.
+function layoutGraph(g) {
+  const deg = {};
+  for (const e of g.edges) { deg[e.comp] = (deg[e.comp] || 0) + 1; deg[e.drink] = (deg[e.drink] || 0) + 1; }
+  const nbrs = {};
+  for (const e of g.edges) { (nbrs[e.comp] ||= []).push(e.drink); (nbrs[e.drink] ||= []).push(e.comp); }
+  const cols = { companion: [], drink: [] };
+  for (const c of state.cats) {
+    if (!c.pair_group || !c.is_item) continue;
+    const ids = state.items.filter((i) => i.type === c.type && deg[i._id]).map((i) => i._id).sort((a, b) => deg[b] - deg[a]);
+    if (ids.length) cols[c.pair_group].push({ type: c.type, label: c.label, ids });
+  }
+  const pos = {};
+  const index = (side) => { let n = 0; for (const grp of cols[side]) for (const id of grp.ids) pos[id] = n++; };
+  index("companion"); index("drink");
+  for (let sweep = 0; sweep < 6; sweep++) {
+    for (const side of ["companion", "drink"]) {
+      for (const grp of cols[side]) {
+        const bary = (id) => (nbrs[id] || []).reduce((a, o) => a + pos[o], 0) / (nbrs[id] || [1]).length;
+        grp.ids.sort((a, b) => bary(a) - bary(b));
+      }
+      index(side);
+    }
+  }
+  // Both columns span the same height, so the shorter one gets taller rows.
+  const HEAD = 22, ROW = 19;
+  const need = (side) => cols[side].reduce((a, grp) => a + HEAD + grp.ids.length * ROW, 0);
+  const H = Math.max(need("companion"), need("drink"), 220);
+  const y = {}, headers = [], rowH = {};
+  for (const side of ["companion", "drink"]) {
+    const n = cols[side].reduce((a, grp) => a + grp.ids.length, 0);
+    const rh = n ? Math.min(34, (H - cols[side].length * HEAD) / n) : ROW;
+    rowH[side] = rh;
+    let top = 0;
+    for (const grp of cols[side]) {
+      headers.push({ side, label: grp.label, type: grp.type, n: grp.ids.length, y: top + 13 });
+      top += HEAD;
+      for (const id of grp.ids) { y[id] = top + rh / 2; top += rh; }
+    }
+  }
+  return { cols, y, rowH, H, deg, nbrs };
+}
+
+const PG = { W: 1000, TOP: 30, LNODE: 300, RNODE: 690, NODEW: 10 };
+const clip = (t, n) => (t.length > n ? t.slice(0, n - 1) + "…" : t);
+
+function drawPairs() {
+  const g = buildGraph(), L = layoutGraph(g), svg = $("pg-svg");
+  const ids = new Set(); g.edges.forEach((e) => { ids.add(e.comp); ids.add(e.drink); });
+  $("pg-summary").textContent = g.edges.length
+    ? `${g.edges.length} pairing${g.edges.length === 1 ? "" : "s"} between ${ids.size} items${pg.pair ? " — filtered" : ""}`
+    : "No pairings to show yet.";
+  $("pg-clear").hidden = !pg.pair;
+  svg.setAttribute("viewBox", `0 0 ${PG.W} ${L.H + PG.TOP + 8}`);
+  svg.classList.remove("act", "side-comp", "side-drink");
+
+  const xL = PG.LNODE + PG.NODEW, xR = PG.RNODE, xm = (xL + xR) / 2;
+  const edgeSvg = g.edges.map((e, i) => {
+    const y1 = L.y[e.comp] + PG.TOP, y2 = L.y[e.drink] + PG.TOP;
+    return `<path class="edge${e.by.length > 1 ? " mutual" : ""}" data-e="${i}" d="M${xL} ${y1} C${xm} ${y1} ${xm} ${y2} ${xR} ${y2}"></path>`;
+  }).join("");
+  const nodeSvg = (side) => L.cols[side].flatMap((grp) => grp.ids).map((id) => {
+    const it = g.byId[id], isC = side === "companion", rh = L.rowH[side], y = L.y[id] + PG.TOP;
+    const label = clip(title(it), 34), x = isC ? PG.LNODE : PG.RNODE;
+    return `<g class="node ${isC ? "comp" : "drink"}" data-n="${esc(id)}">
+      <rect class="hit" x="${isC ? 0 : PG.RNODE - 4}" y="${y - rh / 2}" width="${isC ? PG.LNODE + PG.NODEW + 4 : PG.W - PG.RNODE + 4}" height="${rh}"></rect>
+      <rect class="bar" x="${x}" y="${y - Math.min(8, rh / 2 - 1)}" width="${PG.NODEW}" height="${Math.min(16, rh - 2)}" rx="2"></rect>
+      <text x="${isC ? x - 30 : x + PG.NODEW + 32}" y="${y + 4}" text-anchor="${isC ? "end" : "start"}">${esc(label)}</text>
+      <text class="dim" x="${isC ? x - 8 : x + PG.NODEW + 8}" y="${y + 4}" text-anchor="${isC ? "end" : "start"}">${L.deg[id]}</text></g>`;
+  }).join("");
+  // group headings sit where each group starts
+  const heads = [];
+  for (const side of ["companion", "drink"]) {
+    let top = 0; const rh = L.rowH[side];
+    for (const grp of L.cols[side]) {
+      heads.push(`<text class="grp" x="${side === "companion" ? PG.LNODE + PG.NODEW : PG.RNODE}" y="${top + PG.TOP + 13}" text-anchor="${side === "companion" ? "end" : "start"}">${ICONS[grp.type] || ""} ${esc(grp.label)} · ${grp.ids.length}</text>`);
+      top += 22 + grp.ids.length * rh;
+    }
+  }
+  svg.innerHTML = `<text class="coltitle" x="${PG.LNODE + PG.NODEW}" y="14" text-anchor="end">Companions</text>
+    <text class="coltitle" x="${PG.RNODE}" y="14" text-anchor="start">Drinks</text>${edgeSvg}${heads.join("")}${nodeSvg("companion")}${nodeSvg("drink")}`;
+  pg.g = g; pg.L = L;
+  highlightPairs();
+  renderPairDetail();
+}
+
+// Light up the links of the hovered (preview) or clicked (pinned) item.
+function highlightPairs() {
+  const svg = $("pg-svg"), active = pg.hover || pg.sel, g = pg.g;
+  svg.querySelectorAll(".edge.on, .node.partner, .node.active").forEach((n) => n.classList.remove("on", "partner", "active"));
+  svg.classList.remove("act", "side-comp", "side-drink");
+  if (!active || !g || !pg.L.deg[active]) return;
+  const partners = new Set();
+  g.edges.forEach((e, i) => { if (e.comp === active || e.drink === active) { svg.querySelector(`.edge[data-e="${i}"]`)?.classList.add("on"); partners.add(e.comp === active ? e.drink : e.comp); } });
+  svg.classList.add("act", sideOf(g.byId[active].type) === "companion" ? "side-comp" : "side-drink");
+  svg.querySelectorAll(".node").forEach((n) => { if (partners.has(n.dataset.n)) n.classList.add("partner"); if (n.dataset.n === active) n.classList.add("active"); });
+}
+
+function renderPairDetail() {
+  const box = $("pg-detail"), id = pg.sel || pg.hover, g = pg.g;
+  if (!id || !g || !g.byId[id] || !pg.L.deg[id]) { box.innerHTML = `<h3>Pairings</h3><p class="dim">Hover an item to preview its pairings, click to keep them. Click it again to let go.</p>`; return; }
+  const it = g.byId[id], mine = sideOf(it.type);
+  const links = g.edges.filter((e) => e.comp === id || e.drink === id).map((e) => ({ e, other: g.byId[e.comp === id ? e.drink : e.comp] }))
+    .sort((a, b) => (b.other.rating ?? -1) - (a.other.rating ?? -1));
+  box.innerHTML = `<h3>${ICONS[it.type] || ""} ${esc(title(it))}</h3>
+    <div class="dim" style="margin-bottom:6px">${esc([it.type, it.country_of_origin, it.rating ? "★ " + Number(it.rating).toFixed(1) : "unrated"].filter(Boolean).join(" · "))} · ${links.length} pairing${links.length === 1 ? "" : "s"}</div>
+    <button class="open-item" data-id="${esc(id)}">Open this item</button>
+    <div style="margin-top:8px">${links.map(({ e, other }) => {
+      const mutual = e.by.length > 1, src = e.why[id] || e.why[other._id];
+      return `<div class="prow" data-n="${esc(other._id)}"><span>${ICONS[other.type] || ""}</span><span>${esc(title(other))}</span><span>${other.rating ? "★ " + Number(other.rating).toFixed(1) : '<span class="dim">☆</span>'}</span>
+        <div class="why">${mutual ? "Each suggested the other. " : e.by[0] === id ? "" : esc(other.name) + " suggested this. "}${src ? esc(src.profile || "") : ""}</div></div>`;
+    }).join("")}</div>`;
+}
+
+// The overview grid: how many pairings between each companion type and drink type.
+function renderPairGrid() {
+  const g = (() => { const sv = pg.pair; pg.pair = null; const r = buildGraph(); pg.pair = sv; return r; })();
+  const comps = state.cats.filter((c) => c.is_item && c.pair_group === "companion"), drinks = state.cats.filter((c) => c.is_item && c.pair_group === "drink");
+  const count = {}; let max = 0;
+  for (const e of g.edges) { const k = g.byId[e.comp].type + "|" + g.byId[e.drink].type; count[k] = (count[k] || 0) + 1; max = Math.max(max, count[k]); }
+  const step = (n) => Math.min(6, Math.floor((n / Math.max(1, max)) * 6.999));
+  $("pg-grid").innerHTML = `<table class="hm"><thead><tr><th class="corner"></th>${drinks.map((d) => `<th>${ICONS[d.type] || ""} ${esc(d.label)}</th>`).join("")}</tr></thead><tbody>` +
+    comps.map((c) => `<tr><th class="rl">${ICONS[c.type] || ""} ${esc(c.label)}</th>${drinks.map((d) => {
+      const n = count[c.type + "|" + d.type] || 0, on = pg.pair && pg.pair[0] === c.type && pg.pair[1] === d.type, k = step(n);
+      return n ? `<td class="${on ? "on" : ""}" data-p="${c.type}|${d.type}" style="background:var(--q${k});color:var(--qt${k})" title="${esc(c.label)} with ${esc(d.label)}: ${n} pairing${n === 1 ? "" : "s"}">${n}</td>` : `<td class="zero" title="No pairings">·</td>`;
+    }).join("")}</tr>`).join("") + `</tbody></table>`;
+}
+
+function renderPairTable() {
+  const g = buildGraph();
+  const rows = g.edges.map((e) => ({ e, c: g.byId[e.comp], d: g.byId[e.drink] })).sort((a, b) => (b.e.by.length - a.e.by.length) || title(a.c).localeCompare(title(b.c)));
+  $("pg-table").innerHTML = `<table><thead><tr><th>Companion</th><th>Drink</th><th>Suggested by</th></tr></thead><tbody>${rows.map(({ e, c, d }) =>
+    `<tr><td>${ICONS[c.type] || ""} ${esc(title(c))}</td><td>${ICONS[d.type] || ""} ${esc(title(d))}</td><td class="dim">${e.by.length > 1 ? "both" : esc(e.by[0] === c._id ? c.name : d.name)}</td></tr>`).join("") || `<tr><td colspan="3" class="dim">None.</td></tr>`}</tbody></table>`;
+}
+
+function renderPairs() {
+  if (!state.items.length || !state.cats.length) { $("pg-summary").textContent = "Loading…"; return; }
+  renderPairGrid(); drawPairs();
+  if ($("pg-tabledet").open) renderPairTable();
+}
+
+(() => {
+  const svg = $("pg-svg"), tip = $("pg-tip");
+  const nodeOf = (e) => e.target.closest(".node");
+  svg.addEventListener("pointerover", (e) => { const n = nodeOf(e); if (!n) return; pg.hover = n.dataset.n; highlightPairs(); if (!pg.sel) renderPairDetail(); });
+  svg.addEventListener("pointermove", (e) => {
+    const n = nodeOf(e); if (!n) { tip.hidden = true; return; }
+    const it = pg.g.byId[n.dataset.n], box = svg.parentElement.getBoundingClientRect();
+    tip.textContent = `${title(it)} — ${pg.L.deg[it._id]} pairing${pg.L.deg[it._id] === 1 ? "" : "s"}${it.rating ? " · ★ " + Number(it.rating).toFixed(1) : ""}`;
+    tip.style.left = e.clientX - box.left + "px"; tip.style.top = e.clientY - box.top + "px"; tip.hidden = false;
+  });
+  svg.addEventListener("pointerleave", () => { pg.hover = null; tip.hidden = true; highlightPairs(); if (!pg.sel) renderPairDetail(); });
+  svg.addEventListener("click", (e) => { const n = nodeOf(e); if (!n) { pg.sel = null; } else { pg.sel = pg.sel === n.dataset.n ? null : n.dataset.n; } highlightPairs(); renderPairDetail(); });
+  $("pg-detail").addEventListener("click", (e) => {
+    const open = e.target.closest("button.open-item"); if (open) { openDrawer(open.dataset.id); return; }
+    const row = e.target.closest(".prow"); if (row) { pg.sel = row.dataset.n; pg.hover = null; highlightPairs(); renderPairDetail(); }
+  });
+  $("pg-grid").addEventListener("click", (e) => {
+    const td = e.target.closest("td[data-p]"); if (!td) return;
+    const p = td.dataset.p.split("|");
+    pg.pair = pg.pair && pg.pair[0] === p[0] && pg.pair[1] === p[1] ? null : p;
+    pg.sel = null; pg.hover = null; renderPairs();
+  });
+  $("pg-clear").onclick = () => { pg.pair = null; pg.sel = null; renderPairs(); };
+  $("pg-tabledet").addEventListener("toggle", () => { if ($("pg-tabledet").open) renderPairTable(); });
+})();
+
 const tabLoaders = {
+  pairs: () => renderPairs(),
   map: () => loadMap().catch((e) => ($("mp-summary").textContent = e.message)),
   changes: () => loadHistory(),
   models: () => loadModels().catch((e) => ($("md-roles").textContent = e.message)),

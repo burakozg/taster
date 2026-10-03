@@ -606,6 +606,7 @@ that gets lost. Tabs:
 |---|---|---|
 | Data | items grouped by type, data-quality filters, inline edit, regenerate / re-match pairings, Fetch details, chat over the vault, undo history | CouchDB directly |
 | Map | a world map with the countries your items come from highlighted (darker = more items); click one for its items, which open in the edit drawer. Free-text countries ("Scotland", "Türkiye") are matched to map shapes by an alias table; anything unmatched is listed under "Not on the map" | CouchDB directly; shapes from `static/world.json` |
+| Pairings | a two-column link diagram of the suggested pairings (companions left, drinks right, one curve per pairing, thicker when each suggested the other) with a type-by-type count grid above it as overview and filter; hover an item to preview its links, click to pin them and see the profile behind each | CouchDB directly (`pairings_suggested`) |
 | Changes | what bulk operations replaced (fetched details, pairings), newest first; click a line for the old and new values, Undo restores the old | `admin/history.jsonl` (shared with the worker) |
 | Maintain (AI) | free-form bulk-edit plan → tick → apply | CouchDB directly; model = *reasoning* role |
 | Sync | records ↔ Obsidian vault check, rebuild vault, rebuild records, normalize | CouchDB directly |
