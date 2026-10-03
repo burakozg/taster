@@ -65,7 +65,7 @@ _HINTS: dict[str, str] = {
     "region": "the distilling region or appellation (e.g. Speyside, Islay)",
     "bottler": "the independent bottler, ONLY if this is not an official distillery bottling (e.g. Gordon & MacPhail, Signatory)",
     "category": "single malt, blend, bourbon, rye…",
-    "peated": "whether the whisky is peated (true/false)",
+    "peated": "whether the whisky is peated — answer exactly true or false",
     "cask": "the cask type or finish stated for this expression (e.g. Oloroso sherry)",
     "age_years": "the age statement in years as a whole number",
     "abv": "the bottling strength in percent ABV (number)",
@@ -101,17 +101,31 @@ FETCHABLE: dict[str, tuple[str, ...]] = {
 # is absent on an official bottling, which is not "missing".
 _OPTIONAL_BY_NATURE = frozenset({"bottler"})
 
-_WORKER_SCHEMA = {
-    "type": "object",
-    "properties": {
-        "found": {"type": "boolean"},
-        "value": {"type": "string", "description": "the value, as plain text (numbers as digits, true/false for yes/no)"},
-        "source_url": {"type": "string", "description": "the exact page the quote was copied from"},
-        "quote": {"type": "string", "description": "a VERBATIM fragment copied from that page that states the fact, max 300 characters"},
-    },
-    "required": ["found"],
-    "additionalProperties": False,
-}
+def _worker_schema(field: str) -> dict[str, Any]:
+    """The answer a worker must give. EVERY key is required, always: with only `found`
+    required, the model returned {"found": true, "value": "43%"} and simply left out
+    the source and quote — an answer that looks complete and proves nothing. A
+    not-found answer fills the other three with empty strings. The value is typed
+    per field so a yes/no field cannot come back as a paragraph."""
+    kind = _KINDS.get(field, "text")
+    if field == "peated":
+        value: dict[str, Any] = {"type": "string", "enum": ["true", "false", ""],
+                                 "description": "exactly true or false — nothing else; empty if not found"}
+    elif kind in ("int", "float"):
+        value = {"type": "string", "description": "just the number, digits only (e.g. 43 or 12); empty if not found"}
+    else:
+        value = {"type": "string", "description": "just the value, no explanation or caveats; empty if not found"}
+    return {
+        "type": "object",
+        "properties": {
+            "found": {"type": "boolean"},
+            "value": value,
+            "source_url": {"type": "string", "description": "the exact page the quote was copied from; empty if not found"},
+            "quote": {"type": "string", "description": "a VERBATIM fragment copied from that page that states the fact, max 300 characters; empty if not found"},
+        },
+        "required": ["found", "value", "source_url", "quote"],
+        "additionalProperties": False,
+    }
 _WORKER_PROMPT = """\
 You look up ONE fact about ONE product for a personal tasting log, using web \
 search. Find a page that states the fact for THIS exact product — the same \
@@ -119,9 +133,10 @@ producer, name, age statement and edition — not a sibling expression, another 
 age, or the brand in general. Prefer the producer's own page, then established \
 retailers and reviewers.
 
-Return found=true only with all three of: the `value`, the `source_url` of the \
-page you actually read, and a `quote` copied word for word from that page that \
-states it. Otherwise return found=false and nothing else. Never answer from \
+Always fill all four keys. found=true needs all three of: the `value` (only the \
+value — no explanation, no caveats), the `source_url` of the page you actually \
+read, and a `quote` copied word for word from that page that states it. \
+Otherwise return found=false with value, source_url and quote as empty strings. Never answer from \
 memory, never paraphrase the quote, never guess. A near miss (a different age \
 or edition) is found=false.
 """
@@ -169,6 +184,13 @@ _MAX_PAGE_BYTES = 1_500_000
 _WORKER_CONCURRENCY = 3
 
 
+def _short(text: Any, limit: int = 160) -> str:
+    """One line, bounded: a reason is shown in the page, and the raw text of a
+    model that rambled must not be."""
+    t = " ".join(str(text or "").split())
+    return t if len(t) <= limit else t[: limit - 1] + "…"
+
+
 def is_empty(field: str, value: Any) -> bool:
     if value is None or value == "" or value == []:
         return True
@@ -192,20 +214,19 @@ def _coerce(field: str, raw: Any) -> Any:
     if not s:
         raise ValueError("empty value")
     if field == "peated":
-        low = s.casefold()
-        if low in ("true", "yes", "peated"):
-            return True
-        if low in ("false", "no", "unpeated", "non-peated"):
-            return False
-        raise ValueError(f"not a yes/no: {s!r}")
+        # Take a leading yes/no even if the model went on to explain itself.
+        m = re.match(r"\W*(true|false|yes|no|unpeated|non-peated|peated)\b", s.casefold())
+        if m:
+            return m.group(1) in ("true", "yes", "peated")
+        raise ValueError("the answer was not a clear true/false")
     if kind in ("int", "float"):
         m = re.search(r"\d+(?:[.,]\d+)?", s)
         if not m:
-            raise ValueError(f"no number in {s!r}")
+            raise ValueError("no number in the answer")
         num = float(m.group().replace(",", "."))
         if kind == "int":
             if num != int(num):
-                raise ValueError(f"{s!r} is not a whole number")
+                raise ValueError("not a whole number")
             return int(num)
         return round(num, 1)
     if kind == "list":
@@ -306,7 +327,7 @@ async def _work_one(settings: Settings, db: CouchDBClient, model: str, job_id: s
         settings, db, job_id=f"{job_id}#{field}", model=model,
         system_prompt=_WORKER_PROMPT, text=ask,
         image_b64=None, image_media_type=None,
-        use_web_search=True, output_schema=_WORKER_SCHEMA, site="details",
+        use_web_search=True, output_schema=_worker_schema(field), site="details",
         web_search_max_uses=3, effort=effort_for_role(settings, "research"),
     )
     return out
@@ -382,7 +403,7 @@ async def fetch_details(
             p: dict[str, Any] = {"field": field, "current": item.get(field), "value": None,
                                  "source_url": "", "quote": "", "evidence": "", "reason": "", "verdict": ""}
             if err:
-                p.update(evidence="error", reason=f"lookup failed: {err}")
+                p.update(evidence="error", reason=f"lookup failed: {_short(err, 120)}")
             elif not out or not out.get("found"):
                 p.update(evidence="notfound", reason="no source found for this exact product")
             else:
@@ -393,7 +414,7 @@ async def fetch_details(
                     p.update(evidence="rejected", reason=str(e))
                 else:
                     if not p["source_url"] or not p["quote"]:
-                        p.update(evidence="rejected", reason="no source URL or quote given")
+                        p.update(evidence="rejected", reason="a value came back with no source URL or quote")
                     elif not _value_in_quote(field, p["value"], p["quote"]):
                         p.update(evidence="rejected", reason="the value is not in its own quote")
                     elif (why := _check_schema(item, field, p["value"])):
@@ -449,6 +470,7 @@ async def fetch_details(
     # What a person should accept by default: evidence checked AND the
     # orchestrator happy AND it fills a gap rather than replacing a value.
     for p in proposals:
+        p["reason"] = _short(p.get("reason"))
         p["recommended"] = (p["evidence"] == "verified" and p["verdict"] == "ok"
                             and is_empty(p["field"], p["current"]))
     result["proposals"] = proposals

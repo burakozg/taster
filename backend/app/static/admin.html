@@ -110,6 +110,7 @@
     .badge.verified, .badge.ok { color:var(--ok); border-color:var(--ok); }
     .badge.unverified, .badge.doubtful, .badge.unchecked { color:var(--warn); border-color:var(--warn); }
     .badge.rejected, .badge.conflict { color:var(--danger); border-color:var(--danger); }
+    .norows { margin:4px 0 0 18px; padding:0; font-size:12px; } .norows li { margin:1px 0; }
     .val { font-weight:600; } .old { color:var(--dim); text-decoration:line-through; }
   </style>
 </head>
@@ -523,7 +524,8 @@ function reviewCard(r) {
           <div><span class="dim">${esc(p.field)}</span> ${emptyVal(p.field, p.current) ? "" : `<span class="old">${esc(show(p.current))}</span> `}<span class="val">${esc(show(p.value))}</span>
             <span class="badge ${p.evidence}">${p.evidence}</span> <span class="badge ${p.verdict || "unchecked"}">${p.verdict || "unchecked"}</span></div>
           <div class="q">“${esc(p.quote)}” — <a href="${esc(p.source_url)}" target="_blank" rel="noopener noreferrer">${esc((() => { try { return new URL(p.source_url).hostname; } catch { return p.source_url; } })())}</a>${p.reason ? ` · ${esc(p.reason)}` : ""}</div></div>`).join("")}
-        ${rest.length ? `<div class="dim" style="margin-top:6px">No usable result: ${rest.map((p) => `${esc(p.field)} (${esc(p.reason || p.evidence)})`).join("; ")}</div>` : ""}
+        ${rest.length ? `<div class="dim" style="margin-top:8px"><div>No usable result for ${rest.length} field${rest.length === 1 ? "" : "s"}:</div>
+          <ul class="norows">${rest.map((p) => `<li><b>${esc(p.field)}</b> — ${esc(p.reason || p.evidence)}</li>`).join("")}</ul></div>` : ""}
         ${!r.proposals.length ? `<div class="dim">Nothing to look up — no gaps.</div>` : ""}</div>`;
 }
 
