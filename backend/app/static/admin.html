@@ -26,6 +26,7 @@
     .bar .sp { flex:1; }
     .dim { color:var(--dim); }
     .tablewrap { overflow-x:auto; background:var(--surface); border:1px solid var(--border); border-radius:10px; }
+    #groups { margin-bottom:8px; }
     table { border-collapse:collapse; width:100%; }
     th, td { text-align:left; padding:7px 10px; border-bottom:1px solid var(--border); white-space:nowrap; }
     th { position:sticky; top:0; background:var(--surface-2); cursor:pointer; user-select:none; font-weight:600; }
@@ -45,6 +46,15 @@
     details { margin-top:16px; } summary { cursor:pointer; font-weight:600; }
     .hist td { white-space:normal; }
     #msg { min-height:20px; margin:6px 0; }
+    details.group { background:var(--surface); border:1px solid var(--border); border-radius:10px; margin-bottom:8px; }
+    details.group > summary { display:flex; align-items:center; gap:8px; padding:10px 12px; cursor:pointer; font-weight:600; list-style:none; }
+    details.group > summary::-webkit-details-marker { display:none; }
+    details.group > summary::before { content:"›"; color:var(--dim); width:1ch; transition:transform .15s; }
+    details.group[open] > summary::before { transform:rotate(90deg); }
+    .group-count { margin-left:auto; color:var(--dim); font-weight:normal; font-size:12px; background:var(--surface-2); border-radius:99px; padding:1px 9px; }
+    .group-flag { font-size:12px; font-weight:normal; }
+    details.group .tablewrap { border:0; border-top:1px solid var(--border); border-radius:0 0 10px 10px; }
+    #empty { padding:16px; color:var(--dim); }
   </style>
 </head>
 <body>
@@ -68,6 +78,7 @@
   </div>
 
   <div class="bar">
+    <button id="selall">Select / clear shown</button>
     <span id="selinfo" class="dim">0 selected</span>
     <button id="regen-sel" disabled>Regenerate pairings (selected)</button>
     <button id="match-sel" disabled>Re-match only (selected)</button>
@@ -83,17 +94,7 @@
   <div class="progress" id="progwrap" hidden><div id="prog"></div></div>
   <div id="msg" class="dim"></div>
 
-  <div class="tablewrap">
-    <table>
-      <thead><tr>
-        <th><input type="checkbox" id="selall" title="Select all shown" /></th>
-        <th data-k="name">Name</th><th data-k="type">Type</th><th data-k="rating">★</th>
-        <th data-k="status">Status</th><th data-k="country_of_origin">Country</th>
-        <th data-k="common">Common notes</th><th data-k="pairings">Pairings</th><th data-k="matches">Matched</th><th>Job</th>
-      </tr></thead>
-      <tbody id="rows"></tbody>
-    </table>
-  </div>
+  <div id="groups"></div>
 
   <details id="histbox">
     <summary>Recent pairing changes (undo)</summary>
@@ -105,7 +106,7 @@
 
 <script>
 const $ = (id) => document.getElementById(id);
-const state = { items: [], cats: [], sel: new Set(), sort: { k: "name", dir: 1 }, rowJob: {}, jobs: [], pending: null, editing: null };
+const state = { items: [], cats: [], sel: new Set(), sort: { k: "rating", dir: -1 }, rowJob: {}, jobs: [], pending: null, editing: null };
 
 // Sign-in is the homelab's central login, enforced by Traefik before a request
 // gets here; an expired session answers with a redirect to the login page.
@@ -164,7 +165,7 @@ async function load() {
 function shown() {
   const q = $("q").value.trim().toLowerCase(), t = $("type").value, is = $("issue").value;
   const { k, dir } = state.sort;
-  const val = (i) => (["common", "pairings", "matches"].includes(k) ? facts(i)[k] : (i[k] ?? ""));
+  const val = (i) => (["common", "pairings", "matches"].includes(k) ? facts(i)[k] : k === "rating" ? (i.rating ?? -1) : (i[k] ?? ""));
   return state.items
     .filter((i) => (!t || i.type === t)
       && (!q || `${i.name} ${i.producer || ""}`.toLowerCase().includes(q))
@@ -172,38 +173,86 @@ function shown() {
     .sort((a, b) => (val(a) > val(b) ? 1 : val(a) < val(b) ? -1 : 0) * dir);
 }
 
+const ICONS = { cigar: "🚬", whisky: "🥃", coffee: "☕", beer: "🍺", pipe: "🌿", chocolate: "🍫", raki: "🍶" };
+const COLS = [["name", "Name"], ["rating", "★"], ["status", "Status"], ["country_of_origin", "Country"],
+  ["common", "Common notes"], ["pairings", "Pairings"], ["matches", "Matched"]];
+// Groups the user has opened, kept across re-renders (every tick of a checkbox
+// redraws the list). Like the Search tab they start collapsed.
+const openTypes = new Set();
+
+function rowHtml(i) {
+  const f = facts(i), job = state.rowJob[i._id];
+  const noCountry = !i.country_of_origin || i.country_of_origin === "unknown";
+  return `<tr class="row" data-id="${esc(i._id)}">
+    <td><input type="checkbox" class="pick" ${state.sel.has(i._id) ? "checked" : ""} /></td>
+    <td class="name">${esc(i.name)} <span class="dim">${esc(i.producer || "")}</span></td>
+    <td>${i.rating ?? ""}</td><td>${esc(i.status || "")}</td>
+    <td class="${noCountry ? "warnc" : ""}">${esc(i.country_of_origin || "")}</td>
+    <td class="${f.common ? "good" : "bad"}">${f.common ? "✓" : "missing"}</td>
+    <td class="${f.pairings ? "" : "bad"}">${f.pairings}</td>
+    <td class="${f.matches < f.pairings ? "warnc" : ""}">${f.matches}/${f.pairings}</td>
+    <td class="${job ? "st-" + job.status : ""}" title="${esc(job?.error || "")}">${job ? job.status : ""}</td></tr>`;
+}
+
 function render() {
   const rows = shown();
   $("count").textContent = `${rows.length} of ${state.items.length}`;
-  $("rows").innerHTML = rows.map((i) => {
-    const f = facts(i), job = state.rowJob[i._id];
-    return `<tr class="row" data-id="${esc(i._id)}">
-      <td><input type="checkbox" class="pick" ${state.sel.has(i._id) ? "checked" : ""} /></td>
-      <td class="name">${esc(i.name)} <span class="dim">${esc(i.producer || "")}</span></td>
-      <td><span class="tag">${esc(i.type)}</span></td>
-      <td>${i.rating ?? ""}</td><td>${esc(i.status || "")}</td>
-      <td class="${!i.country_of_origin || i.country_of_origin === "unknown" ? "warnc" : ""}">${esc(i.country_of_origin || "")}</td>
-      <td class="${f.common ? "good" : "bad"}">${f.common ? "✓" : "missing"}</td>
-      <td class="${f.pairings ? "" : "bad"}">${f.pairings}</td>
-      <td class="${f.matches < f.pairings ? "warnc" : ""}">${f.matches}/${f.pairings}</td>
-      <td class="${job ? "st-" + job.status : ""}" title="${esc(job?.error || "")}">${job ? job.status : ""}</td></tr>`;
+  const filtering = Boolean($("q").value.trim() || $("issue").value);
+  // Category order and labels come from the same registry the app uses; any
+  // type the registry doesn't know yet still gets a group after them.
+  const order = state.cats.filter((c) => c.is_item).map((c) => c.type);
+  const types = [...order, ...[...new Set(rows.map((i) => i.type))].filter((t) => !order.includes(t))];
+  const html = types.map((type) => {
+    const group = rows.filter((i) => i.type === type);
+    if (!group.length) return "";
+    const label = state.cats.find((c) => c.type === type)?.label || type;
+    // A filter is a "show me those" request, so its matches open on their own.
+    const open = openTypes.has(type) || filtering;
+    const all = group.every((i) => state.sel.has(i._id));
+    const picked = group.filter((i) => state.sel.has(i._id)).length;
+    return `<details class="group" data-type="${esc(type)}" ${open ? "open" : ""}>
+      <summary><span>${ICONS[type] || ""}</span><span>${esc(label)}</span>
+        ${picked ? `<span class="group-flag dim">${picked} selected</span>` : ""}
+        <span class="group-count">${group.length}</span></summary>
+      <div class="tablewrap"><table>
+        <thead><tr><th><input type="checkbox" class="pickgroup" ${all ? "checked" : ""} title="Select all in ${esc(label)}" /></th>
+          ${COLS.map(([k, t]) => `<th data-k="${k}">${t}${state.sort.k === k ? (state.sort.dir > 0 ? " ▲" : " ▼") : ""}</th>`).join("")}<th>Job</th></tr></thead>
+        <tbody>${group.map(rowHtml).join("")}</tbody>
+      </table></div></details>`;
   }).join("");
+  $("groups").innerHTML = html || `<div id="empty">${state.items.length ? "No items match." : "No items yet."}</div>`;
   const n = state.sel.size;
   $("selinfo").textContent = `${n} selected`;
   $("regen-sel").disabled = $("match-sel").disabled = !n;
-  $("selall").checked = rows.length > 0 && rows.every((i) => state.sel.has(i._id));
 }
 
-$("rows").addEventListener("click", (e) => {
-  const tr = e.target.closest("tr.row"); if (!tr) return;
+// toggle doesn't bubble, so listen in the capture phase.
+$("groups").addEventListener("toggle", (e) => {
+  const d = e.target;
+  if (!d.classList?.contains("group")) return;
+  if ($("q").value.trim() || $("issue").value) return;  // auto-opened by a filter, not by the user
+  d.open ? openTypes.add(d.dataset.type) : openTypes.delete(d.dataset.type);
+}, true);
+
+$("groups").addEventListener("click", (e) => {
+  const t = e.target;
+  if (t.classList.contains("pickgroup")) {
+    const type = t.closest("details").dataset.type;
+    for (const i of shown().filter((i) => i.type === type)) t.checked ? state.sel.add(i._id) : state.sel.delete(i._id);
+    render(); return;
+  }
+  const th = t.closest("th[data-k]");
+  if (th) { const k = th.dataset.k; state.sort = { k, dir: state.sort.k === k ? -state.sort.dir : 1 }; render(); return; }
+  const tr = t.closest("tr.row"); if (!tr) return;
   const id = tr.dataset.id;
-  if (e.target.classList.contains("pick")) { e.target.checked ? state.sel.add(id) : state.sel.delete(id); render(); return; }
+  if (t.classList.contains("pick")) { t.checked ? state.sel.add(id) : state.sel.delete(id); render(); return; }
   openDrawer(id);
 });
-$("selall").addEventListener("change", (e) => { for (const i of shown()) e.target.checked ? state.sel.add(i._id) : state.sel.delete(i._id); render(); });
-document.querySelector("thead").addEventListener("click", (e) => {
-  const k = e.target.dataset?.k; if (!k) return;
-  state.sort = { k, dir: state.sort.k === k ? -state.sort.dir : 1 }; render();
+// Select / clear everything currently shown, across groups.
+$("selall").addEventListener("click", () => {
+  const rows = shown(), every = rows.length > 0 && rows.every((i) => state.sel.has(i._id));
+  for (const i of rows) every ? state.sel.delete(i._id) : state.sel.add(i._id);
+  render();
 });
 ["q", "type", "issue"].forEach((id) => $(id).addEventListener("input", render));
 $("reload").addEventListener("click", () => load().catch((e) => say(e.message, "bad")));
