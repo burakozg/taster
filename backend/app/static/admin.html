@@ -83,6 +83,12 @@
     .logrow td { white-space:normal; font-family:ui-monospace,Menlo,monospace; font-size:12px; }
     .lv-WARNING { color:var(--warn); } .lv-ERROR, .lv-CRITICAL { color:var(--danger); }
     #review { margin-bottom:12px; }
+    #statusbar { position:sticky; top:0; z-index:4; background:var(--bg); padding:2px 0; }
+    #dwork { margin:10px 0; }
+    #dwork .card { margin:0; }
+    .indet { height:4px; background:var(--surface-2); border-radius:2px; overflow:hidden; margin:8px 0 2px; position:relative; }
+    .indet::after { content:""; position:absolute; inset:0 auto 0 -30%; width:30%; background:var(--accent); animation:slide 1.2s infinite ease-in-out; }
+    @keyframes slide { to { left:100%; } }
     #chat { background:var(--surface); border:1px solid var(--border); border-radius:10px; margin-bottom:12px; }
     #chat > summary { padding:10px 12px; cursor:pointer; font-weight:600; }
     #chatlog { max-height:46vh; overflow-y:auto; padding:0 12px; }
@@ -166,6 +172,7 @@
     <button id="det-gaps">Fetch details for all with gaps…</button>
     <label class="dim"><input type="checkbox" id="det-over" /> also re-check filled fields</label>
   </div>
+  <div id="statusbar">
   <div id="confirm" class="bar" hidden>
     <span id="confirm-text"></span>
     <button id="confirm-yes" class="primary">Start</button>
@@ -174,6 +181,7 @@
   <div id="review"></div>
   <div class="progress" id="progwrap" hidden><div id="prog"></div></div>
   <div id="msg" class="dim"></div>
+  </div>
 
   <div id="groups"></div>
 
@@ -443,7 +451,7 @@ async function startJobs(path, body) {
   const r = await api(path, { method: "POST", body: JSON.stringify(body) });
   state.jobs = r.jobs.map((j) => ({ ...j, status: "queued", done: false }));
   state.rowJob = {};
-  if (path === "/api/details") { state.proposals = {}; renderReview(); }
+  if (path === "/api/details") { state.proposals = {}; state.revealed = false; renderReview(); }
   for (const j of state.jobs) for (const d of j.doc_ids) state.rowJob[d] = { status: "queued" };
   state.total = r.items; $("progwrap").hidden = false; render(); poll();
 }
@@ -470,6 +478,9 @@ async function poll() {
           state.proposals[u.result.doc_id] = u.result;
           for (const d of j.doc_ids) state.rowJob[d] = { status: "done" };
           renderReview();
+          // Results land at the top of the list; if the person is scrolled down
+          // in a group they would never see them. Bring them into view once.
+          if (!state.revealed) { state.revealed = true; $("review").scrollIntoView?.({ behavior: "smooth", block: "start" }); }
         } else if (u.status === "done" || u.status === "failed") {
           j.done = true;
           for (const d of j.doc_ids) {
@@ -486,7 +497,7 @@ async function poll() {
       await new Promise((r) => setTimeout(r, 3000));
     }
     say("All jobs finished. Refreshing…");
-    if (Object.keys(state.proposals).length) { say("Done — review the proposed details above."); return; }
+    if (Object.keys(state.proposals).length) { say(`Done — ${Object.keys(state.proposals).length} item(s) ready to review in “Proposed details”.`); return; }
     await refreshUntilFresh();
   } catch (e) { say(e.message, "bad"); } finally { polling = false; }
 }
@@ -498,12 +509,8 @@ async function refreshUntilFresh() {
 
 // ---- review of fetched details ----
 const show = (v) => (Array.isArray(v) ? v.join(", ") : v === true ? "yes" : v === false ? "no" : v ?? "");
-function renderReview() {
-  const items = Object.values(state.proposals);
-  if (!items.length) { $("review").innerHTML = ""; return; }
-  $("review").innerHTML = `<div class="bar"><b>Proposed details</b><span class="dim">ticked = verified against its source and approved by the reviewer; the rest need your judgement</span>
-      <span class="sp"></span><button id="rv-apply" class="primary">Apply ticked</button><button id="rv-clear">Dismiss</button></div>` +
-    items.map((r) => {
+// One item's proposals: evidence, reviewer verdict, quote and source per field.
+function reviewCard(r) {
       const live = r.proposals.filter((p) => p.value != null && p.evidence !== "rejected" && p.evidence !== "unchanged");
       const rest = r.proposals.filter((p) => !live.includes(p));
       return `<div class="rv-item" data-doc="${esc(r.doc_id)}">
@@ -518,7 +525,14 @@ function renderReview() {
           <div class="q">“${esc(p.quote)}” — <a href="${esc(p.source_url)}" target="_blank" rel="noopener noreferrer">${esc((() => { try { return new URL(p.source_url).hostname; } catch { return p.source_url; } })())}</a>${p.reason ? ` · ${esc(p.reason)}` : ""}</div></div>`).join("")}
         ${rest.length ? `<div class="dim" style="margin-top:6px">No usable result: ${rest.map((p) => `${esc(p.field)} (${esc(p.reason || p.evidence)})`).join("; ")}</div>` : ""}
         ${!r.proposals.length ? `<div class="dim">Nothing to look up — no gaps.</div>` : ""}</div>`;
-    }).join("");
+}
+
+function renderReview() {
+  const items = Object.values(state.proposals);
+  if (!items.length) { $("review").innerHTML = ""; return; }
+  $("review").innerHTML = `<div class="bar"><b>Proposed details</b><span class="dim">ticked = verified against its source and approved by the reviewer; the rest need your judgement</span>
+      <span class="sp"></span><button id="rv-apply" class="primary">Apply ticked</button><button id="rv-clear">Dismiss</button></div>` +
+    items.map(reviewCard).join("");
   $("rv-clear").onclick = () => { state.proposals = {}; renderReview(); };
   $("rv-apply").onclick = async () => {
     $("rv-apply").disabled = true; let ok = 0, bad = 0;
@@ -578,12 +592,16 @@ function openDrawer(id) {
   $("drawer").innerHTML = `<div class="bar"><b>${esc(title(item))}</b><span class="sp"></span><button id="dclose">Close</button></div>
     ${(cat?.edit_fields || []).map(f).join("")}
     <div class="bar"><button id="dsave" class="primary">Save</button><button id="dregen">Regenerate pairings</button><button id="dmatch">Re-match</button><button id="ddet">Fetch details</button><span id="dmsg" class="dim"></span></div>
+    <div id="dwork"></div>
     <h3>Pairings</h3>${pr || '<p class="dim">None.</p>'}`;
   $("drawer").classList.add("open"); $("drawer").setAttribute("aria-hidden", "false");
   $("dclose").onclick = closeDrawer;
-  $("dregen").onclick = () => { closeDrawer(); ask("regenerate", [id]); };
-  $("dmatch").onclick = () => { closeDrawer(); ask("rematch", [id]); };
-  $("ddet").onclick = () => { closeDrawer(); ask("details", [id]); };
+  // Work started from the drawer is shown IN the drawer. It used to close the
+  // drawer and report at the top of the page, which — scrolled down a long list —
+  // looked like the click had done nothing.
+  $("dregen").onclick = () => drawerPairings(item, "regenerate");
+  $("dmatch").onclick = () => drawerPairings(item, "rematch");
+  $("ddet").onclick = () => drawerFetch(item);
   $("dsave").onclick = async () => {
     const fields = {};
     for (const el of $("drawer").querySelectorAll("[data-f]")) {
@@ -602,6 +620,79 @@ function openDrawer(id) {
     $("dsave").disabled = false;
   };
 }
+// ---- work started from the drawer, shown in the drawer ----
+const dBusy = (on) => document.querySelectorAll("#drawer .bar button").forEach((b) => { if (b.id !== "dclose") b.disabled = on; });
+const stillOpen = (id) => state.editing === id && $("drawer").classList.contains("open") && $("dwork");
+const workBox = (title, status) => `<div class="card"><b>${esc(title)}</b><div id="dstat" class="dim">${esc(status)}</div><div class="indet"></div></div>`;
+
+async function drawerFetch(item) {
+  const todo = detailTargets(item, false);
+  if (!todo.length) {
+    $("dwork").innerHTML = `<div class="card dim">Nothing to look up — every fetchable field already has a value. Use “also re-check filled fields” on the Data tab to verify existing values.</div>`;
+    return;
+  }
+  dBusy(true);
+  $("dwork").innerHTML = workBox("Fetch details", "Starting…");
+  try {
+    const r = await api("/api/details", { method: "POST", body: JSON.stringify({ doc_ids: [item._id] }) });
+    const j = await portalJob(r.jobs[0].job_id, {
+      onTick: (job, secs) => {
+        if (!stillOpen(item._id)) return;
+        $("dstat").textContent = job.status === "queued"
+          ? `Waiting for earlier jobs to finish… ${secs}s`
+          : `Searching the web for ${todo.length} field${todo.length === 1 ? "" : "s"} (${todo.join(", ")}), then checking each source… ${secs}s — usually 1–2 minutes`;
+      },
+    });
+    if (stillOpen(item._id)) drawerProposals(item, j.result);
+    else { state.proposals[item._id] = j.result; renderReview(); say(`Details for ${j.result.name} are ready to review above.`); }
+  } catch (e) {
+    if (stillOpen(item._id)) $("dwork").innerHTML = `<div class="card bad">Fetch details failed: ${esc(e.message)}</div>`;
+    else say(`Fetch details failed: ${e.message}`, "bad");
+  }
+  if (stillOpen(item._id)) dBusy(false);
+}
+
+function drawerProposals(item, result) {
+  $("dwork").innerHTML = `<div class="card"><div class="dim" style="margin-bottom:6px">Ticked = verified against its source and approved by the reviewer; the rest need your judgement. Nothing is saved until you apply.</div>
+    ${reviewCard(result)}
+    <div class="bar"><button id="dapply" class="primary">Apply ticked</button><button id="ddismiss">Dismiss</button><span id="dapplymsg" class="dim"></span></div></div>`;
+  $("ddismiss").onclick = () => { $("dwork").innerHTML = ""; };
+  $("dapply").onclick = async () => {
+    const fields = {};
+    for (const el of $("dwork").querySelectorAll(".rv-pick:checked")) fields[el.dataset.field] = result.proposals.find((p) => p.field === el.dataset.field).value;
+    if (!Object.keys(fields).length) { $("dapplymsg").textContent = "Tick at least one."; return; }
+    $("dapply").disabled = true; $("dapplymsg").textContent = "Saving…";
+    try {
+      await api("/api/details/apply", { method: "POST", body: JSON.stringify({ doc_id: item._id, fields }) });
+      await load(); loadHistory();
+      openDrawer(item._id);   // redraw with the saved values
+      $("dwork").innerHTML = `<div class="card good">Saved ${esc(Object.keys(fields).join(", "))}. Undo is in “Recent changes” below the list.</div>`;
+    } catch (e) { $("dapplymsg").textContent = e.message; $("dapply").disabled = false; }
+  };
+}
+
+async function drawerPairings(item, mode) {
+  const label = mode === "rematch" ? "Re-match pairings" : "Regenerate pairings";
+  dBusy(true);
+  $("dwork").innerHTML = workBox(label, "Starting…");
+  try {
+    const r = await api("/api/pairings", { method: "POST", body: JSON.stringify({ doc_ids: [item._id], mode }) });
+    const j = await portalJob(r.jobs[0].job_id, {
+      onTick: (job, secs) => { if (stillOpen(item._id)) $("dstat").textContent = job.status === "queued" ? `Waiting for earlier jobs to finish… ${secs}s` : `Working… ${secs}s`; },
+    });
+    const res = (j.result.results || [])[0];
+    await load(); loadHistory();
+    if (stillOpen(item._id)) {
+      openDrawer(item._id);   // shows the new pairings
+      $("dwork").innerHTML = res && res.status === "applied"
+        ? `<div class="card good">${esc(label)}: done. The previous pairings are in “Recent changes” below the list if you want them back.</div>`
+        : `<div class="card bad">${esc(label)} failed: ${esc((res && res.error) || "no result")}</div>`;
+    }
+  } catch (e) {
+    if (stillOpen(item._id)) { $("dwork").innerHTML = `<div class="card bad">${esc(label)} failed: ${esc(e.message)}</div>`; dBusy(false); }
+  }
+}
+
 function closeDrawer() { $("drawer").classList.remove("open"); $("drawer").setAttribute("aria-hidden", "true"); }
 document.addEventListener("keydown", (e) => { if (e.key === "Escape") closeDrawer(); });
 
