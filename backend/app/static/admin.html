@@ -310,6 +310,12 @@
     <div class="bar">
       <span id="pg-summary" class="dim"></span>
       <span class="sp"></span>
+      <label class="dim">Order
+        <select id="pg-sort">
+          <option value="count">Most pairings first, by type</option>
+          <option value="flat">Most pairings first, all types together</option>
+          <option value="tidy">Fewest line crossings</option>
+        </select></label>
       <button id="pg-clear" hidden>Show all types</button>
     </div>
 
@@ -1415,7 +1421,7 @@ $("mp-reset").onclick = () => mp.world && setViewBox([0, 0, mp.world.width, mp.w
 // per suggested pairing. A force-directed network would be a hairball here and an
 // item-by-item matrix too wide to read. Colour carries ONE thing — which side an item
 // is on — so two hues cover it; the item's type is its group, label and icon.
-const pg = { sel: null, hover: null, pair: null, g: null };
+const pg = { sel: null, hover: null, pair: null, g: null, sort: "count" };
 
 function sideOf(type) { return state.cats.find((c) => c.type === type)?.pair_group || null; }
 
@@ -1454,21 +1460,33 @@ function layoutGraph(g) {
   const nbrs = {};
   for (const e of g.edges) { (nbrs[e.comp] ||= []).push(e.drink); (nbrs[e.drink] ||= []).push(e.comp); }
   const cols = { companion: [], drink: [] };
+  const byCount = (a, b) => (deg[b] - deg[a]) || ((g.byId[b].rating ?? -1) - (g.byId[a].rating ?? -1)) || title(g.byId[a]).localeCompare(title(g.byId[b]));
   for (const c of state.cats) {
     if (!c.pair_group || !c.is_item) continue;
-    const ids = state.items.filter((i) => i.type === c.type && deg[i._id]).map((i) => i._id).sort((a, b) => deg[b] - deg[a]);
+    const ids = state.items.filter((i) => i.type === c.type && deg[i._id]).map((i) => i._id).sort(byCount);
     if (ids.length) cols[c.pair_group].push({ type: c.type, label: c.label, ids });
+  }
+  if (pg.sort === "flat") {
+    // One list per side, ordered purely by pairing count; the type is shown by the icon.
+    for (const side of ["companion", "drink"]) {
+      const ids = cols[side].flatMap((grp) => grp.ids).sort(byCount);
+      cols[side] = ids.length ? [{ type: null, label: side === "companion" ? "All companions" : "All drinks", ids }] : [];
+    }
   }
   const pos = {};
   const index = (side) => { let n = 0; for (const grp of cols[side]) for (const id of grp.ids) pos[id] = n++; };
   index("companion"); index("drink");
-  for (let sweep = 0; sweep < 6; sweep++) {
-    for (const side of ["companion", "drink"]) {
-      for (const grp of cols[side]) {
-        const bary = (id) => (nbrs[id] || []).reduce((a, o) => a + pos[o], 0) / (nbrs[id] || [1]).length;
-        grp.ids.sort((a, b) => bary(a) - bary(b));
+  if (pg.sort === "tidy") {
+    // Order inside each group by the average position of the partners, a few sweeps:
+    // far fewer crossings than any fixed order, at the cost of the counts not lining up.
+    for (let sweep = 0; sweep < 6; sweep++) {
+      for (const side of ["companion", "drink"]) {
+        for (const grp of cols[side]) {
+          const bary = (id) => (nbrs[id] || []).reduce((a, o) => a + pos[o], 0) / (nbrs[id] || [1]).length;
+          grp.ids.sort((a, b) => bary(a) - bary(b));
+        }
+        index(side);
       }
-      index(side);
     }
   }
   // Both columns span the same height, so the shorter one gets taller rows.
@@ -1510,7 +1528,7 @@ function drawPairs() {
   }).join("");
   const nodeSvg = (side) => L.cols[side].flatMap((grp) => grp.ids).map((id) => {
     const it = g.byId[id], isC = side === "companion", rh = L.rowH[side], y = L.y[id] + PG.TOP;
-    const label = clip(title(it), 34), x = isC ? PG.LNODE : PG.RNODE;
+    const label = clip((pg.sort === "flat" ? (ICONS[it.type] || "") + " " : "") + title(it), 34), x = isC ? PG.LNODE : PG.RNODE;
     return `<g class="node ${isC ? "comp" : "drink"}" data-n="${esc(id)}">
       <rect class="hit" x="${isC ? 0 : PG.RNODE - 4}" y="${y - rh / 2}" width="${isC ? PG.LNODE + PG.NODEW + 4 : PG.W - PG.RNODE + 4}" height="${rh}"></rect>
       <rect class="bar" x="${x}" y="${y - Math.min(8, rh / 2 - 1)}" width="${PG.NODEW}" height="${Math.min(16, rh - 2)}" rx="2"></rect>
@@ -1550,7 +1568,9 @@ function renderPairDetail() {
   if (!id || !g || !g.byId[id] || !pg.L.deg[id]) { box.innerHTML = `<h3>Pairings</h3><p class="dim">Hover an item to preview its pairings, click to keep them. Click it again to let go.</p>`; return; }
   const it = g.byId[id], mine = sideOf(it.type);
   const links = g.edges.filter((e) => e.comp === id || e.drink === id).map((e) => ({ e, other: g.byId[e.comp === id ? e.drink : e.comp] }))
-    .sort((a, b) => (b.other.rating ?? -1) - (a.other.rating ?? -1));
+    .sort((a, b) => pg.sort === "tidy"
+      ? (b.other.rating ?? -1) - (a.other.rating ?? -1)
+      : (pg.L.deg[b.other._id] - pg.L.deg[a.other._id]) || ((b.other.rating ?? -1) - (a.other.rating ?? -1)));
   box.innerHTML = `<h3>${ICONS[it.type] || ""} ${esc(title(it))}</h3>
     <div class="dim" style="margin-bottom:6px">${esc([it.type, it.country_of_origin, it.rating ? "★ " + Number(it.rating).toFixed(1) : "unrated"].filter(Boolean).join(" · "))} · ${links.length} pairing${links.length === 1 ? "" : "s"}</div>
     <button class="open-item" data-id="${esc(id)}">Open this item</button>
@@ -1577,9 +1597,14 @@ function renderPairGrid() {
 
 function renderPairTable() {
   const g = buildGraph();
-  const rows = g.edges.map((e) => ({ e, c: g.byId[e.comp], d: g.byId[e.drink] })).sort((a, b) => (b.e.by.length - a.e.by.length) || title(a.c).localeCompare(title(b.c)));
+  const deg = {};
+  for (const e of g.edges) { deg[e.comp] = (deg[e.comp] || 0) + 1; deg[e.drink] = (deg[e.drink] || 0) + 1; }
+  const rows = g.edges.map((e) => ({ e, c: g.byId[e.comp], d: g.byId[e.drink] })).sort((a, b) => pg.sort === "tidy"
+    ? (b.e.by.length - a.e.by.length) || title(a.c).localeCompare(title(b.c))
+    // the more-connected companion first, then the more-connected drink
+    : (deg[b.e.comp] - deg[a.e.comp]) || title(a.c).localeCompare(title(b.c)) || (deg[b.e.drink] - deg[a.e.drink]));
   $("pg-table").innerHTML = `<table><thead><tr><th>Companion</th><th>Drink</th><th>Suggested by</th></tr></thead><tbody>${rows.map(({ e, c, d }) =>
-    `<tr><td>${ICONS[c.type] || ""} ${esc(title(c))}</td><td>${ICONS[d.type] || ""} ${esc(title(d))}</td><td class="dim">${e.by.length > 1 ? "both" : esc(e.by[0] === c._id ? c.name : d.name)}</td></tr>`).join("") || `<tr><td colspan="3" class="dim">None.</td></tr>`}</tbody></table>`;
+    `<tr><td>${ICONS[c.type] || ""} ${esc(title(c))} <span class="dim">${deg[c._id]}</span></td><td>${ICONS[d.type] || ""} ${esc(title(d))} <span class="dim">${deg[d._id]}</span></td><td class="dim">${e.by.length > 1 ? "both" : esc(e.by[0] === c._id ? c.name : d.name)}</td></tr>`).join("") || `<tr><td colspan="3" class="dim">None.</td></tr>`}</tbody></table>`;
 }
 
 function renderPairs() {
@@ -1611,6 +1636,7 @@ function renderPairs() {
     pg.sel = null; pg.hover = null; renderPairs();
   });
   $("pg-clear").onclick = () => { pg.pair = null; pg.sel = null; renderPairs(); };
+  $("pg-sort").addEventListener("change", () => { pg.sort = $("pg-sort").value; renderPairs(); });
   $("pg-tabledet").addEventListener("toggle", () => { if ($("pg-tabledet").open) renderPairTable(); });
 })();
 
