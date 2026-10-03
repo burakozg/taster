@@ -873,3 +873,8 @@ button.danger:hover, .rating-clear.danger:hover { color: #fff; background: var(-
   margin-left: var(--s1);
   vertical-align: middle;
 }
+
+/* The saved card opens the item's detail popup. */
+.success-card.tappable { cursor: pointer; }
+.success-card.tappable:active { background: var(--surface-2); }
+.success-card .sc-chev { margin-left: auto; align-self: center; color: var(--text-dim); font-size: 1.4rem; line-height: 1; }

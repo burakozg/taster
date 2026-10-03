@@ -96,6 +96,7 @@ CAPTURE_OUTPUT_SCHEMA = {
         # whisky
         "category": {"type": "string"},
         "region": {"type": "string"},
+        "bottler": {"type": "string", "description": "independent bottler (e.g. Gordon & MacPhail, Signatory); only when it is NOT an official distillery bottling, then `producer` stays the distillery"},
         "peated": {"type": "boolean"},
         "cask": {"type": "string"},
         "age_years": {"type": "integer"},

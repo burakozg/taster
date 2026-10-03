@@ -107,6 +107,9 @@ function getRating() {
 // history while the UI sticks on "Still working". So the AI-heavy call sites
 // pass minutes, not the default. Elapsed seconds are shown so a slow-but-alive
 // job doesn't read as hung.
+// Resolves true only when the job finished successfully; false on failure or
+// when the deadline passed, so a caller can decide whether to keep the user's
+// input (a form that clears itself on a failed job throws their typing away).
 async function pollJob(path, statusEl, { onDone, workingMessage, timeoutMs = 120000, intervalMs = 2000 }) {
   const started = Date.now();
   statusEl.textContent = workingMessage;
@@ -118,17 +121,18 @@ async function pollJob(path, statusEl, { onDone, workingMessage, timeoutMs = 120
       if (result.status === "done") {
         statusEl.classList.remove("working");
         onDone(result);
-        return;
+        return true;
       }
       if (result.status === "failed") {
         statusEl.classList.remove("working");
         statusEl.textContent = `Failed: ${result.error ?? "unknown error"}`;
-        return;
+        return false;
       }
       // "pending" or "processing" — keep polling, showing it's still alive
       statusEl.textContent = `${workingMessage} (${Math.round((Date.now() - started) / 1000)}s)`;
     }
     statusEl.textContent = "Still working — check the recent jobs in Admin; the result will be there when it finishes.";
+    return false;
   } finally {
     statusEl.classList.remove("working");
   }
@@ -220,6 +224,23 @@ function initAdd() {
       body.appendChild(sub);
     }
     card.append(check, body);
+    // Open the saved record in the same detail popup Search uses, so the
+    // content can be checked and edited straight away. The popup edits by
+    // `_id`, which the capture result carries as `doc_id`.
+    if (result.doc_id && result.note) {
+      const chev = document.createElement("span");
+      chev.className = "sc-chev";
+      chev.textContent = "›";
+      card.append(chev);
+      card.classList.add("tappable");
+      card.setAttribute("role", "button");
+      card.tabIndex = 0;
+      const open = () => openItemDetail({ ...result.note, _id: result.doc_id });
+      card.addEventListener("click", open);
+      card.addEventListener("keydown", (e) => {
+        if (e.key === "Enter" || e.key === " ") { e.preventDefault(); open(); }
+      });
+    }
     statusEl.appendChild(card);
   }
 
@@ -247,9 +268,17 @@ function initAdd() {
         const { capture_id } = await apiFetch("/capture/chat", { method: "POST", body: form });
         path = `/capture/${capture_id}`;
       }
-      await pollJob(path, statusEl, { workingMessage: "Enriching...", onDone: showSaved, timeoutMs: 180000 });
-      textEl.value = "";
-      photo.clear();
+      const ok = await pollJob(path, statusEl, { workingMessage: "Enriching...", onDone: showSaved, timeoutMs: 180000 });
+      // Only a saved capture clears the form; on failure the text and photo stay
+      // so it can be retried or tweaked instead of retyped.
+      if (ok) {
+        textEl.value = "";
+        photo.clear();
+      } else if (statusEl.textContent.startsWith("Failed:")) {
+        statusEl.textContent += " — your input is still here, edit it and try again.";
+      } else if (statusEl.textContent.startsWith("Still working")) {
+        statusEl.textContent += " Your input is kept; check Admin before retrying so it isn't saved twice.";
+      }
     } catch (e) {
       statusEl.textContent = `Error: ${e.message}`;
     } finally {
@@ -1184,7 +1213,7 @@ const MODAL_HIDDEN_FIELDS = new Set([
 // as empty inputs so they can be filled in.
 // Fallback edit forms (see the note on GROUPS) — replaced by /categories.
 let EDIT_FIELDS = {
-  whisky: ["name", "producer", "rating", "status", "stock", "country_of_origin", "region", "category", "peated", "cask", "age_years", "abv", "price_sek", "recommended_by", "tags", "notes", "common_notes"],
+  whisky: ["name", "producer", "rating", "status", "stock", "country_of_origin", "region", "bottler", "category", "peated", "cask", "age_years", "abv", "price_sek", "recommended_by", "tags", "notes", "common_notes"],
   cigar: ["name", "producer", "rating", "status", "stock", "country_of_origin", "wrapper", "vitola", "strength", "price_sek", "recommended_by", "tags", "notes", "common_notes"],
   coffee: ["name", "producer", "rating", "status", "stock", "country_of_origin", "origin", "roaster", "process", "roast_level", "grind_size", "dose_g", "brew_time_s", "grinder", "machine", "price_sek", "recommended_by", "tags", "notes", "common_notes"],
   pairing: ["rating", "tags", "notes"],

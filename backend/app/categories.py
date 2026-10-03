@@ -70,7 +70,7 @@ CATEGORIES: tuple[Category, ...] = (
     Category("cigar", "Cigars", CigarNote,
              _HEAD + ("wrapper", "vitola", "strength") + _TAIL),
     Category("whisky", "Whiskies", WhiskyNote,
-             _HEAD + ("region", "category", "peated", "cask", "age_years", "abv") + _TAIL,
+             _HEAD + ("region", "bottler", "category", "peated", "cask", "age_years", "abv") + _TAIL,
              folder="Whisky"),
     Category("coffee", "Coffee Beans", CoffeeNote,
              _HEAD + ("brew_method", "origin", "roaster", "process", "roast_level",
