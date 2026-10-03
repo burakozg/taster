@@ -181,6 +181,7 @@
       <option value="unrated">Tasted but unrated</option>
     </select>
     <span class="dim" id="count"></span>
+    <button id="toggle-all" type="button" title="Open or close every group">Expand all</button>
     <span class="sp"></span>
     <button id="reload">Reload</button>
   </div>
@@ -387,6 +388,9 @@ const COLS = [["producer", "Producer"], ["name", "Name"], ["rating", "★"], ["s
 // Groups the user has opened, kept across re-renders (every tick of a checkbox
 // redraws the list). Like the Search tab they start collapsed.
 const openTypes = new Set();
+// "Expand all" / "Collapse all" override the per-group state until the person opens
+// or closes a single group, or changes a filter.  null = no override.
+let allMode = null;
 
 function rowHtml(i) {
   const f = facts(i), job = state.rowJob[i._id];
@@ -416,7 +420,7 @@ function render() {
     if (!group.length) return "";
     const label = state.cats.find((c) => c.type === type)?.label || type;
     // A filter is a "show me those" request, so its matches open on their own.
-    const open = openTypes.has(type) || filtering;
+    const open = allMode === "open" ? true : allMode === "closed" ? false : (openTypes.has(type) || filtering);
     const all = group.every((i) => state.sel.has(i._id));
     const picked = group.filter((i) => state.sel.has(i._id)).length;
     return `<details class="group" data-type="${esc(type)}" ${open ? "open" : ""}>
@@ -430,6 +434,7 @@ function render() {
       </table></div></details>`;
   }).join("");
   $("groups").innerHTML = html || `<div id="empty">${state.items.length ? "No items match." : "No items yet."}</div>`;
+  syncToggleLabel();
   const n = state.sel.size;
   $("selinfo").textContent = n ? `${n} selected` : "none selected";
   $("selinfo").classList.toggle("on", n > 0);
@@ -441,11 +446,28 @@ function render() {
   $("selall").checked = rows.length > 0 && rows.every((i) => state.sel.has(i._id));
 }
 
+// One button for both directions, offering whichever would change something. It reads
+// the groups actually on screen, so it stays right however they were opened or closed.
+function syncToggleLabel() {
+  const gs = [...document.querySelectorAll("#groups details.group")];
+  $("toggle-all").textContent = gs.length && gs.every((g) => g.open) ? "Collapse all" : "Expand all";
+  $("toggle-all").disabled = !gs.length;
+}
+
 // toggle doesn't bubble, so listen in the capture phase.
 $("groups").addEventListener("toggle", (e) => {
   const d = e.target;
   if (!d.classList?.contains("group")) return;
+  syncToggleLabel();
   if ($("q").value.trim() || $("issue").value) return;  // auto-opened by a filter, not by the user
+  if (allMode) {
+    // A single group was opened or closed by hand: the override is over. Keep what is
+    // on screen as the new per-group state, so nothing jumps.
+    allMode = null;
+    openTypes.clear();
+    document.querySelectorAll("details.group[open]").forEach((g) => openTypes.add(g.dataset.type));
+    return;
+  }
   d.open ? openTypes.add(d.dataset.type) : openTypes.delete(d.dataset.type);
 }, true);
 
@@ -472,7 +494,14 @@ $("selall").addEventListener("click", () => {
   for (const i of rows) every ? state.sel.delete(i._id) : state.sel.add(i._id);
   render();
 });
-["q", "type", "issue"].forEach((id) => $(id).addEventListener("input", render));
+["q", "type", "issue"].forEach((id) => $(id).addEventListener("input", () => { allMode = null; render(); }));
+$("toggle-all").onclick = () => {
+  const collapse = $("toggle-all").textContent === "Collapse all";
+  allMode = collapse ? "closed" : "open";
+  if (collapse) openTypes.clear();
+  else document.querySelectorAll("details.group").forEach((g) => openTypes.add(g.dataset.type));
+  render();
+};
 $("reload").addEventListener("click", () => load().catch((e) => say(e.message, "bad")));
 
 // ---- pairing jobs ----
