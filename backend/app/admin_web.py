@@ -17,6 +17,19 @@ minute-old snapshot, and nothing about it is exposed to the internet.
   POST /api/details/apply  {doc_id, fields}   write the proposals a person accepted
   POST /api/chat           {messages}  one chat turn: a reply plus proposed actions
                            (answered concurrently, not queued behind long jobs)
+
+The operations that used to live in the phone app's Admin tab live here too, so
+the phone keeps only capture, search and per-item actions:
+
+  GET  /api/status         relay queue + snapshot state (is the worker alive?)
+  GET  /api/relay-jobs     the relay's recent jobs (captures, lookups …)
+  GET  /api/usage          the token ledger, by day, model and task
+  GET  /api/models         catalog + the three role choices + effective models
+  PUT  /api/models         change the role choices (applies to the next call)
+  POST /api/sync/{action}  status | rebuild-vault | rebuild-records | normalize
+  POST /api/maintain/plan  {instruction}  free-form AI bulk-edit PLAN (writes nothing)
+  POST /api/maintain/apply {changes}      apply the ticked part of a plan
+  GET  /api/logs           the worker's and this portal's logs, filterable
   GET  /api/jobs?ids=      progress of those jobs
   GET  /api/history        recent pairing changes, each with what it replaced
 
@@ -53,11 +66,14 @@ from app import history
 from app.detail_fetch import FETCHABLE, apply_details, fetch_details
 from app.items_query import query_all_items
 from app.logging_setup import setup_logging
-from app.manage_service import run_repair_pairings_items
+from app.logs import read_logs, sources as log_sources
+from app.manage_service import run_manage_apply, run_manage_plan, run_repair_pairings_items
 from app.model_roles import admin_overrides, model_for_role
 from app.record_service import update_record
 from app.relay_client import RelayClient
 from app import usage
+from app import model_roles
+from app.sync_service import normalize_records, rebuild_records, rebuild_vault, sync_status
 
 logger = logging.getLogger("admin")
 
@@ -81,6 +97,28 @@ class DetailsBody(BaseModel):
     doc_ids: list[str]
     fields: list[str] | None = None
     overwrite: bool = False
+
+
+class SettingsBody(BaseModel):
+    vision_model: str | None = None
+    research_model: str | None = None
+    reasoning_model: str | None = None
+
+
+class MaintainPlanBody(BaseModel):
+    instruction: str
+
+
+class MaintainApplyBody(BaseModel):
+    changes: list[dict[str, Any]]
+
+
+_SYNC_ACTIONS = {
+    "status": sync_status,
+    "rebuild-vault": rebuild_vault,
+    "rebuild-records": rebuild_records,
+    "normalize": normalize_records,
+}
 
 
 class ChatBody(BaseModel):
@@ -122,6 +160,12 @@ async def _runner(app: FastAPI) -> None:
                     reviewer_model=model_for_role(settings, "reasoning", ov),
                 ))
                 continue
+            if job["kind"] == "sync":
+                job.update(status="done", result=await _SYNC_ACTIONS[job["action"]](db))
+                continue
+            if job["kind"] == "maintain_apply":
+                job.update(status="done", result=await run_manage_apply(job_id, settings, db, changes=job["changes"]))
+                continue
             result = await run_repair_pairings_items(
                 job_id, settings, db, doc_ids=job["doc_ids"], mode=job["mode"],
                 model_override=model_for_role(settings, "research", ov),
@@ -133,7 +177,7 @@ async def _runner(app: FastAPI) -> None:
 
 
 def create_app() -> FastAPI:
-    setup_logging()
+    setup_logging("admin")
     settings = get_settings()
     db = CouchDBClient(
         base_url=settings.couchdb_url, db=settings.couchdb_db,
@@ -243,6 +287,99 @@ def create_app() -> FastAPI:
             raise HTTPException(status_code=404 if "not found" in str(e) else 400, detail=str(e)) from e
         except Exception as e:  # noqa: BLE001 — the schema's reason is what the user needs
             raise HTTPException(status_code=422, detail=str(e)) from e
+
+    def spawn(kind: str, work) -> str:
+        """Run `work()` as its own task (not behind the serial queue) and track it
+        like any job. For things that are quick or interactive: chat, a plan, a
+        read-only sync check."""
+        job_id = str(uuid.uuid4())
+        jobs: Jobs = app.state.jobs
+        jobs.by_id[job_id] = {"kind": kind, "status": "processing", "doc_ids": [], "result": None, "error": None}
+
+        async def go() -> None:
+            job = jobs.by_id[job_id]
+            try:
+                job.update(status="done", result=await work(job_id))
+            except Exception as e:  # noqa: BLE001 — shown to the person, not swallowed
+                logger.exception("%s %s failed", kind, job_id)
+                job.update(status="failed", error=str(e) or type(e).__name__)
+
+        app.state.tasks = getattr(app.state, "tasks", set())
+        task = asyncio.create_task(go())
+        app.state.tasks.add(task)
+        task.add_done_callback(app.state.tasks.discard)
+        return job_id
+
+    async def relay_call(coro):
+        try:
+            return await coro
+        except Exception as e:  # noqa: BLE001
+            raise HTTPException(status_code=502, detail=f"the relay did not answer: {str(e) or type(e).__name__}") from e
+
+    @app.get("/api/status")
+    async def status() -> dict:
+        return await relay_call(relay.admin_status())
+
+    @app.get("/api/relay-jobs")
+    async def relay_jobs(limit: int = Query(default=10, ge=1, le=100)) -> dict:
+        return {"jobs": await relay_call(relay.admin_jobs(limit))}
+
+    @app.get("/api/usage")
+    async def usage_ledger(days: int = Query(default=14, ge=1, le=365)) -> dict:
+        return await relay_call(relay.admin_usage(days))
+
+    @app.get("/api/models")
+    async def models() -> dict:
+        catalog = await relay_call(relay.admin_models())
+        chosen = {k: v for k, v in (await relay_call(relay.get_model_settings())).items() if k in model_roles.ROLES_KEYS}
+        defaults = {r: model_for_role(settings, r) for r in model_roles.ROLES}
+        effective = {r: model_for_role(settings, r, chosen) for r in model_roles.ROLES}
+        return {"models": catalog, "chosen": chosen, "defaults": defaults, "effective": effective}
+
+    @app.put("/api/models")
+    async def set_models(body: SettingsBody) -> dict:
+        await relay_call(relay.admin_put_settings(body.model_dump()))
+        model_roles.forget_cache()   # the next operation picks the new choice up at once
+        return {"ok": True}
+
+    @app.post("/api/sync/{action}", status_code=202)
+    async def sync(action: str) -> dict:
+        if action not in _SYNC_ACTIONS:
+            raise HTTPException(status_code=404, detail="unknown sync action")
+        if action == "status":
+            return {"job_id": spawn("sync", lambda _id: _SYNC_ACTIONS["status"](db))}
+        job_id = str(uuid.uuid4())
+        jobs: Jobs = app.state.jobs
+        jobs.by_id[job_id] = {"kind": "sync", "action": action, "status": "queued", "doc_ids": [], "result": None, "error": None}
+        jobs.queue.put_nowait(job_id)
+        return {"job_id": job_id}
+
+    @app.post("/api/maintain/plan", status_code=202)
+    async def maintain_plan(body: MaintainPlanBody) -> dict:
+        if not body.instruction.strip():
+            raise HTTPException(status_code=400, detail="describe a change first")
+
+        async def work(job_id: str) -> dict:
+            ov = await admin_overrides(relay)
+            return await run_manage_plan(
+                job_id, settings, db, instruction=body.instruction,
+                model_override=model_for_role(settings, "reasoning", ov),
+            )
+        return {"job_id": spawn("maintain", work)}
+
+    @app.post("/api/maintain/apply", status_code=202)
+    async def maintain_apply(body: MaintainApplyBody) -> dict:
+        if not body.changes:
+            raise HTTPException(status_code=400, detail="no changes to apply")
+        job_id = str(uuid.uuid4())
+        jobs: Jobs = app.state.jobs
+        jobs.by_id[job_id] = {"kind": "maintain_apply", "status": "queued", "doc_ids": [], "changes": body.changes, "result": None, "error": None}
+        jobs.queue.put_nowait(job_id)
+        return {"job_id": job_id}
+
+    @app.get("/api/logs")
+    async def logs(source: str | None = None, level: str = "INFO", q: str = "", limit: int = Query(default=300, ge=1, le=1000)) -> dict:
+        return {"sources": log_sources(), "entries": read_logs(source=source or None, level=level, q=q, limit=limit)}
 
     @app.post("/api/chat", status_code=202)
     async def chat(body: ChatBody) -> dict:

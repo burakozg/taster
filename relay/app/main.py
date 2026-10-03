@@ -13,7 +13,7 @@ from app.config import Settings, get_settings
 from app.db import init_db, job_counts, prune_old_jobs
 from app.logging_setup import secret_state, setup_logging
 from app.rate_limit import _LIMIT_PER_MINUTE
-from app.routes import admin, capture, categories, data, items, lookup, manage, record, sync, worker
+from app.routes import capture, categories, data, items, lookup, record, worker, worker_admin
 
 setup_logging()
 logger = logging.getLogger("relay")
@@ -78,11 +78,9 @@ app.include_router(lookup.router)
 app.include_router(items.router)
 app.include_router(categories.router)
 app.include_router(worker.router)
-app.include_router(admin.router)
-app.include_router(manage.router)
-app.include_router(sync.router)
 app.include_router(record.router)
 app.include_router(data.router)
+app.include_router(worker_admin.router)
 
 
 @app.get("/health")

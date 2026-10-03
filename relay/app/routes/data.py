@@ -1,26 +1,25 @@
-"""/data/* — the phone app's way into the maintenance jobs the admin page also runs.
+"""/data/* — the phone app's way into fetching missing details for one item.
 
-The worker executes the same functions taster-admin calls (pairing regeneration,
-detail fetching, applying accepted details), so this file only queues them:
+Everything administrative (pairings, sync, models, usage, bulk maintenance) lives
+on the NAS in taster-admin; the phone keeps only what belongs next to an item:
 
-  POST /data/pairings        {doc_ids | all, mode}  chunked pairing jobs
   POST /data/details         {doc_id, fields?, overwrite?}  look up missing details
                              (proposals only — nothing is written)
-  POST /data/details/apply   {doc_id, fields}       write the accepted proposals
+  POST /data/details/apply   {doc_id, fields}               write the accepted proposals
   GET  /data/jobs?ids=       status + result of those jobs
 
-Pairing work is many small jobs (CHUNK items each), written as each finishes, so a
-failure costs one chunk and the run can outlast the claim timeout safely.
+The worker runs the same `fetch_details` / `apply_details` functions taster-admin
+calls, so the two front ends cannot drift apart.
 """
 from __future__ import annotations
 
-from typing import Any, Literal
+from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 
 from app.auth import require_client_key
-from app.db import create_job, get_items_cache, get_jobs
+from app.db import create_job, get_jobs
 from app.rate_limit import rate_limit
 
 router = APIRouter(
@@ -28,38 +27,6 @@ router = APIRouter(
     tags=["data"],
     dependencies=[Depends(require_client_key), Depends(rate_limit)],
 )
-
-# The worker's repair_batch_size: what one model call handles well.
-CHUNK = 5
-MAX_ITEMS = 500
-
-
-class PairingsRequest(BaseModel):
-    doc_ids: list[str] | None = None
-    all: bool = False
-    # regenerate: new profiles + matches. rematch: keep the stored profiles and
-    # redo only the matching against the vault as it is now (no model call).
-    mode: Literal["regenerate", "rematch"] = "regenerate"
-
-
-@router.post("/pairings", status_code=202)
-async def pairings(body: PairingsRequest) -> dict:
-    if body.all:
-        ids = [i["_id"] for i in get_items_cache() if i.get("_id") and i.get("type") != "pairing"]
-    else:
-        ids = list(dict.fromkeys(body.doc_ids or []))
-    if not ids:
-        raise HTTPException(status_code=400, detail="no items selected")
-    if len(ids) > MAX_ITEMS:
-        raise HTTPException(status_code=400, detail=f"at most {MAX_ITEMS} items per request")
-    jobs = []
-    for n in range(0, len(ids), CHUNK):
-        chunk = ids[n:n + CHUNK]
-        jobs.append({
-            "job_id": create_job("repair_pairings_items", {"doc_ids": chunk, "mode": body.mode}),
-            "doc_ids": chunk,
-        })
-    return {"jobs": jobs, "items": len(ids)}
 
 
 class DetailsRequest(BaseModel):

@@ -54,6 +54,33 @@ class RelayClient:
         resp.raise_for_status()
         return resp.json()
 
+    # --- the relay's admin data, for the NAS-side portal (taster-admin) ---
+    # Reachable only with the worker key; the phone key cannot call these.
+
+    async def admin_models(self) -> list[dict[str, Any]]:
+        resp = await self._client.get("/worker/admin/models")
+        resp.raise_for_status()
+        return resp.json()["models"]
+
+    async def admin_put_settings(self, settings: dict[str, Any]) -> None:
+        resp = await self._client.put("/worker/admin/settings", json=settings)
+        resp.raise_for_status()
+
+    async def admin_status(self) -> dict[str, Any]:
+        resp = await self._client.get("/worker/admin/status")
+        resp.raise_for_status()
+        return resp.json()
+
+    async def admin_usage(self, days: int = 14) -> dict[str, Any]:
+        resp = await self._client.get("/worker/admin/usage", params={"days": days})
+        resp.raise_for_status()
+        return resp.json()
+
+    async def admin_jobs(self, limit: int = 10) -> list[dict[str, Any]]:
+        resp = await self._client.get("/worker/admin/jobs", params={"limit": limit})
+        resp.raise_for_status()
+        return resp.json()["jobs"]
+
     async def push_usage(self, report_id: str, rows: list[dict[str, Any]]) -> None:
         """Report a batch of token-usage deltas (WRK-10). `report_id` is stable
         across retries of the same batch so the relay can ignore one it has

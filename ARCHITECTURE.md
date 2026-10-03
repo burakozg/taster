@@ -122,11 +122,10 @@ piece of this system exposed to the public internet. Two jobs:
 | `app/routes/capture.py`, `routes/lookup.py` | PWA-facing: enqueue a job, poll for its result |
 | `app/routes/items.py` | PWA-facing: serves the cached items snapshot (never queries CouchDB — the relay has no way to reach it) |
 | `app/routes/categories.py` | PWA-facing: serves the category registry metadata (group labels + edit forms) the worker pushes — see the Categories section |
-| `app/routes/manage.py` | PWA-facing: enqueue/poll the AI-maintenance plan + apply jobs |
-| `app/routes/sync.py` | PWA-facing: enqueue/poll the forced full-vault sync jobs (status/rebuild/normalize) |
+| `app/routes/data.py` | PWA-facing: Fetch details for one item (`/data/details`, `/data/details/apply`, `/data/jobs`) |
 | `app/routes/record.py` | PWA-facing: enqueue/poll single-record update/delete jobs |
-| `app/routes/admin.py` | PWA-facing: the Admin tab's API — model selection (stored in SQLite, attached to each job the worker claims), recent-jobs list, status |
-| `app/models_catalog.py` | The curated model list the admin dropdowns offer (Anthropic/OpenAI/Mistral, with relative € cost) — also validates `PUT /admin/settings` |
+| `app/routes/worker_admin.py` | NAS-facing (worker key): what the admin portal reads and changes — model catalog and role choices (stored in SQLite, attached to each job the worker claims), recent jobs, token ledger, status |
+| `app/models_catalog.py` | The curated model list the admin portal's dropdowns offer (open-weight via OpenRouter, plus Mistral, with relative € cost) — also validates `PUT /worker/admin/settings` |
 | `app/routes/worker.py` | NAS-facing only: `GET /worker/jobs/next` (claim — response carries the admin panel's `model_overrides`), `POST /worker/jobs/{id}/result`, `POST /worker/items/snapshot` (items **+ category metadata**) |
 
 **Single-instance constraint**: SQLite here assumes exactly one Fly
@@ -155,7 +154,7 @@ reconciler on a `RECONCILE_INTERVAL_S` (default 30s) timer between jobs.
 | `app/capture_json_schema.py` | The flat JSON schema passed to Claude as `output_config.format` on capture calls (type enum derived from the registry) |
 | `app/capture_service.py` | The capture call: builds the request (image + tools + schema), runs the tool-use/`pause_turn` loop, validates, runs deterministic repeat-detection, stamps `uid` |
 | `app/lookup_service.py` | The lookup call: same tool-loop shape, natural-language answer, shop-mode photo support |
-| `app/manage_service.py` | AI bulk maintenance — `run_manage_plan` (propose changes, write nothing), `run_manage_apply` (apply the approved subset, each change re-validated through the schema), and `run_repair_pairings_plan` (regenerate every item's cross-category pairings without re-capture; applied via `manage_apply`, whose changes then carry a structured `pairings` field) |
+| `app/manage_service.py` | AI bulk maintenance — `run_manage_plan` (propose changes, write nothing), `run_manage_apply` (apply the approved subset, each change re-validated through the schema), and `run_repair_pairings_items` (regenerate or re-match a few items' cross-category pairings without re-capture, written as each chunk finishes, previous pairings kept for undo) |
 | `app/sync_service.py` | Forced full-vault sync — `sync_status`, `rebuild_vault` (DB → Obsidian, re-render), `rebuild_records` (Obsidian → DB, upsert-only), `normalize_records` (schema-drift fix, e.g. legacy `origin_country` → `country_of_origin`) |
 | `app/record_service.py` | Single-record `update_record`/`delete_record` for the PWA's item detail view (the sanctioned in-place exceptions to append-only capture) |
 | `app/reconcile.py` | Reverse-sync — folds a human's Obsidian edit back into the JSON doc, matched by `uid` (see the CouchDB section) |
@@ -314,7 +313,7 @@ dies mid-tool-loop still records what it already spent. Those counts leave the
 worker twice: as a daily rollup line in its own log (emitted at midnight, and
 for the partial day on shutdown), and as **deltas pushed to the relay**, which
 sums them into a `usage_daily` table on its Fly volume and serves them at
-`GET /admin/usage` for the Admin tab's Token usage card. The relay's copy is the
+`GET /worker/admin/usage` for the admin portal's Usage tab. The relay's copy is the
 durable one — worker restarts and log rotation don't touch it. Two details make
 the arithmetic trustworthy: the day key is the **worker's** local date, stored
 verbatim so neither side re-derives it, and each push carries a report id that
@@ -439,18 +438,11 @@ was the first category added this way.
 | `/lookup/{lookup_id}` | GET | job status \| `done` (`answer`) \| `failed` |
 | `/items` | GET | filtered list (`type` — free-form, `status`, `min_rating`, `tag`) against the cached snapshot — no LLM, no CouchDB access, Dataview-free fallback |
 | `/categories` | GET | category registry metadata (group order/labels + edit-form field specs) the PWA builds its groups + edit forms from |
-| `/manage` | POST | AI maintenance: `instruction` → `202` + `manage_id` (plan job, writes nothing) |
-| `/manage/repair-pairings` | POST | regenerate every item's cross-category pairings → `202` + `manage_id` (a plan; reviewed + applied via `/manage/apply`) |
-| `/manage/apply` | POST | apply the approved subset of a plan (regular edits or regenerated pairings) → `202` + `manage_id` |
-| `/manage/{manage_id}` | GET | plan/apply job status \| `done` (`summary`+`changes`, or apply `results`) \| `failed` |
-| `/sync` | POST | forced full-vault sync (`status`/`rebuild_vault`/`rebuild_records`/`normalize`) → `202` + `sync_id` |
-| `/sync/{sync_id}` | GET | sync job status \| `done` (counts + the delta behind them: `records_without_file`, `files_without_record`, `colliding_records`) \| `failed` |
+| `/data/details` | POST | look up one item's missing details → `202` + `job_id` (proposals only; nothing is written) |
+| `/data/details/apply` | POST | write the accepted proposals → `202` + `job_id` |
+| `/data/jobs` | GET | status + result of those jobs (`?ids=a,b`) |
 | `/record/update`, `/record/delete` | POST | single-record edit/delete → `202` + `record_id` |
 | `/record/{record_id}` | GET | record job status \| `done` \| `failed` |
-| `/admin/models` | GET | the curated model catalog (id, label, provider, relative € cost) |
-| `/admin/settings` | GET/PUT | capture/lookup model choice; `null` clears back to the worker's config.yaml default. Applies from the next claimed job |
-| `/admin/jobs` | GET | recent jobs (id/type/status/timestamps/error — never the payload, which can carry image data) |
-| `/admin/status` | GET | items count, snapshot age, job counts by status |
 | `/health` | GET | liveness check, no auth |
 
 ### Relay (worker-facing, bearer = `WORKER_API_KEY` — a different secret)
@@ -460,8 +452,11 @@ was the first category added this way.
 | `/worker/jobs/next` | GET | atomically claim the oldest pending (or stale-processing) job |
 | `/worker/jobs/{id}/result` | POST | report a job done (with result) or failed (with error) |
 | `/worker/items/snapshot` | POST | replace the cached items list (`/items`) and the cached category metadata (`/categories`) in one push |
+| `/worker/usage` | POST | add a batch of token-usage deltas (deduplicated by `report_id`; rows carry the task `site`) |
+| `/worker/settings` | GET | the model choices, migrated and pruned — the shape a claimed job carries |
+| `/worker/admin/models`, `/settings`, `/jobs`, `/usage`, `/status` | GET (PUT for `/settings`) | what the NAS-side admin portal reads and changes: the model catalog and role choices, recent jobs, the token ledger by day/model/task, queue and snapshot state. **Worker key only** — none of this is reachable with the phone's key |
 
-All PWA-facing endpoints are also rate-limited (`relay/app/rate_limit.py`).
+The phone's key can capture, look up, read the item list, edit one record and fetch details for one item — and nothing administrative (models, usage, jobs, sync, bulk edits), which live in the admin portal on the NAS. All PWA-facing endpoints are also rate-limited (`relay/app/rate_limit.py`).
 
 ## Configuration
 
@@ -507,9 +502,10 @@ the QNAP for anything on the internet to connect to at all.
 
 **On the "nothing is written without approval" property**: the plan → approve
 → apply split is a *UX* gate, not a server-enforced safety boundary.
-`POST /manage/apply` applies whatever `changes[]` array the client sends,
-independent of any plan the worker actually produced — so a script holding the
-PWA key can apply arbitrary edits without ever running a plan. What *is*
+The portal's `POST /api/maintain/apply` applies whatever `changes[]` array the
+client sends, independent of any plan actually produced — so a script holding a
+valid portal session can apply arbitrary edits without ever running a plan.
+(This used to be reachable with the phone's key; it no longer is.) What *is*
 enforced server-side is that every applied change re-validates through the
 Pydantic schema (`parse_any_note`), so the maintenance path can never write a
 document the capture path wouldn't accept. That's the real guarantee; the
@@ -598,15 +594,29 @@ remote invocation in `deploy.sh`/`INSTALL.md` uses that absolute path
 explicitly; there's no standalone `docker-compose` binary, only `docker
 compose` (v2.29.1-qnap2) as a plugin subcommand.
 
-## Data-maintenance UI (`taster-admin`)
+## Admin portal (`taster-admin`)
 
 A third container on the NAS, from the same image as the worker
-(`python -m app.admin_web`). It reads and writes CouchDB directly, so it needs
-neither the Fly relay nor its job queue. It lists every item with data-quality
-filters, edits fields in place, and regenerates or re-matches pairings for one,
-selected or all items. Pairing work runs as chunks of `repair_batch_size` items,
-each written as soon as it finishes, with the replaced pairings kept in
-`admin/history.jsonl` for undo.
+(`python -m app.admin_web`), and the home of everything administrative. The phone
+app keeps only Add and Search (plus per-item edit and Fetch details); every
+operator tool moved here, where it is behind the central login and not on a device
+that gets lost. Tabs:
+
+| Tab | What it does | Where it gets its data |
+|---|---|---|
+| Data | items grouped by type, data-quality filters, inline edit, regenerate / re-match pairings, Fetch details, chat over the vault, undo history | CouchDB directly |
+| Maintain (AI) | free-form bulk-edit plan → tick → apply | CouchDB directly; model = *reasoning* role |
+| Sync | records ↔ Obsidian vault check, rebuild vault, rebuild records, normalize | CouchDB directly |
+| Models | the three role choices, with what each currently resolves to | relay `/worker/admin/*` |
+| Usage & jobs | queue/snapshot status, token ledger by day, model and task, recent relay jobs | relay `/worker/admin/*` |
+| Logs | the worker's and the portal's logs, filterable by source, level and text | shared JSON-lines files (`admin/logs/*.log`) |
+
+The relay stays what it should be — a queue, a snapshot cache and the phone's web
+page. It holds the model choices and the token ledger, so the portal reads and
+writes those through worker-key endpoints; nothing else about the portal needs it.
+Logs need no docker socket (which would be root on the NAS): each process also
+writes INFO-and-above JSON lines to a directory both containers mount, and the
+portal tails them.
 
 **Authentication is the homelab's central login** (`homelab-auth`, enforced by
 Traefik's `forwardAuth`) — the app has no key of its own. That is only sound
@@ -646,8 +656,8 @@ them, so the phone app and the web page cannot drift apart:
 
 | front end | path to the functions |
 |---|---|
-| phone app | Fly relay `/data/*` → job queue → worker job types `repair_pairings_items`, `fetch_details`, `details_apply` |
-| admin page | `taster-admin` calls them directly (its own small in-memory queue) |
+| phone app | Fly relay `/data/details*` → job queue → worker job types `fetch_details`, `details_apply` (the only maintenance operation reachable from the phone) |
+| admin portal | `taster-admin` calls them directly (its own small in-memory queue) |
 
 Both write to one change history (`app/history.py`, `admin/history.jsonl`,
 mounted into the worker and taster-admin), so a change made from either can be

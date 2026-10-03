@@ -55,6 +55,33 @@
     .group-flag { font-size:12px; font-weight:normal; }
     details.group .tablewrap { border:0; border-top:1px solid var(--border); border-radius:0 0 10px 10px; }
     #empty { padding:16px; color:var(--dim); }
+    header.top { display:flex; align-items:baseline; gap:16px; flex-wrap:wrap; margin-bottom:10px; }
+    header.top h1 { margin:0; }
+    #status { margin-left:auto; font-size:12px; }
+    nav#tabs { display:flex; gap:4px; flex-wrap:wrap; margin-bottom:14px; border-bottom:1px solid var(--border); }
+    nav#tabs button { border:0; border-bottom:2px solid transparent; border-radius:0; background:none; padding:8px 12px; }
+    nav#tabs button.on { border-bottom-color:var(--accent); font-weight:600; }
+    .tabpanel[hidden] { display:none; }
+    .card { background:var(--surface); border:1px solid var(--border); border-radius:10px; padding:12px; margin-bottom:12px; }
+    .card h3 { margin:0 0 6px; font-size:15px; }
+    .card p.dim { margin:4px 0 8px; }
+    .tiles { display:flex; gap:10px; flex-wrap:wrap; margin:8px 0; }
+    .tile { background:var(--surface-2); border-radius:8px; padding:8px 14px; min-width:90px; }
+    .tile b { display:block; font-size:20px; } .tile span { font-size:12px; color:var(--dim); }
+    .pill { display:inline-block; font-size:12px; padding:1px 9px; border-radius:99px; border:1px solid var(--border); margin-right:6px; }
+    .pill.done, .pill.ok { color:var(--ok); border-color:var(--ok); } .pill.failed, .pill.bad { color:var(--danger); border-color:var(--danger); } .pill.processing, .pill.pending, .pill.warn { color:var(--warn); border-color:var(--warn); }
+    .bars { display:grid; grid-template-columns:minmax(7rem,22%) 1fr 7rem; gap:4px 10px; align-items:center; font-size:12px; font-variant-numeric:tabular-nums; }
+    .bars .track { height:6px; background:var(--surface-2); border-radius:3px; overflow:hidden; } .bars .fill { height:100%; background:var(--accent); }
+    .bars .n { text-align:right; font-weight:600; }
+    .role { display:grid; grid-template-columns:150px 1fr; gap:4px 12px; margin:10px 0; align-items:start; }
+    .role small { grid-column:2; color:var(--dim); }
+    .role select { width:100%; max-width:480px; }
+    .diffsec { margin:8px 0; } .diffsec ul { margin:4px 0 0 18px; padding:0; } .diffsec .h { font-weight:600; }
+    .plan li { list-style:none; margin:6px 0; } .plan ul { padding:0; }
+    .plan .edits { color:var(--dim); font-size:12px; margin-left:22px; }
+    textarea.wide { width:100%; min-height:70px; }
+    .logrow td { white-space:normal; font-family:ui-monospace,Menlo,monospace; font-size:12px; }
+    .lv-WARNING { color:var(--warn); } .lv-ERROR, .lv-CRITICAL { color:var(--danger); }
     #review { margin-bottom:12px; }
     #chat { background:var(--surface); border:1px solid var(--border); border-radius:10px; margin-bottom:12px; }
     #chat > summary { padding:10px 12px; cursor:pointer; font-weight:600; }
@@ -81,7 +108,17 @@
   </style>
 </head>
 <body>
-  <h1>Data maintenance</h1>
+  <header class="top"><h1>Tasting Log admin</h1><div id="status" class="dim"></div></header>
+  <nav id="tabs">
+    <button data-tab="data" class="on">Data</button>
+    <button data-tab="maintain">Maintain (AI)</button>
+    <button data-tab="sync">Sync</button>
+    <button data-tab="models">Models</button>
+    <button data-tab="usage">Usage &amp; jobs</button>
+    <button data-tab="logs">Logs</button>
+  </nav>
+
+  <section id="tab-data" class="tabpanel">
 
   <details id="chat" open>
     <summary>Ask about your vault, or tell it what to fix</summary>
@@ -145,6 +182,68 @@
     <div class="tablewrap" style="margin-top:8px"><table class="hist"><tbody id="hist"></tbody></table></div>
     <p class="dim">The last 500 changes are kept.</p>
   </details>
+
+  </section>
+
+  <section id="tab-maintain" class="tabpanel" hidden>
+    <div class="card">
+      <h3>Maintain (AI)</h3>
+      <p class="dim">Describe a change to make across your records — “add a country of origin to every whisky”, “give records without an id a uid”. It proposes changes; nothing is written until you tick and apply them. Pairings and details are on the Data tab.</p>
+      <textarea id="mt-instruction" class="wide" placeholder="Describe the change to make across your records…"></textarea>
+      <div class="bar"><button id="mt-propose" class="primary">Propose changes</button><span id="mt-status" class="dim"></span></div>
+    </div>
+    <div id="mt-plan" class="card plan" hidden>
+      <div id="mt-summary" class="dim"></div>
+      <ul id="mt-changes"></ul>
+      <div class="bar"><button id="mt-apply" class="primary">Apply selected</button><button id="mt-all">Select all</button><button id="mt-discard">Discard</button><span id="mt-apply-status" class="dim" style="white-space:pre-wrap"></span></div>
+    </div>
+  </section>
+
+  <section id="tab-sync" class="tabpanel" hidden>
+    <div class="card">
+      <h3>Records ↔ Obsidian vault</h3>
+      <div class="bar"><button id="sy-check">Check</button><span id="sy-pill"></span></div>
+      <div id="sy-tiles" class="tiles"></div>
+      <div id="sy-diff"></div>
+    </div>
+    <div class="card">
+      <h3>Repair</h3>
+      <div class="bar"><button id="sy-rebuild-vault">Rebuild vault from records</button><span class="dim">re-creates files, including any deleted in Obsidian; never changes records</span></div>
+      <div class="bar"><button id="sy-rebuild-records">Rebuild records from vault</button><span class="dim">adds/updates records from files; never deletes a record</span></div>
+      <div class="bar"><button id="sy-normalize">Normalize records</button><span class="dim">re-checks every record against the current schema (e.g. origin_country → country_of_origin)</span></div>
+      <div id="sy-msg" class="dim" style="min-height:20px"></div>
+    </div>
+  </section>
+
+  <section id="tab-models" class="tabpanel" hidden>
+    <div class="card">
+      <h3>Models</h3>
+      <p class="dim">Three roles. A vision model only reads photos; the rest is text work, split by shape — many cheap web-search lookups versus fewer judgement calls. A choice applies to the next call, from the phone or from here.</p>
+      <div id="md-roles"></div>
+      <div class="bar"><button id="md-save" class="primary">Save</button><span id="md-status" class="dim"></span></div>
+      <p class="dim">€ is relative cost. mistral-* models need MISTRAL_API_KEY, vendor/model ones go through OpenRouter (OPENROUTER_API_KEY) — both in the worker's .env.</p>
+    </div>
+  </section>
+
+  <section id="tab-usage" class="tabpanel" hidden>
+    <div class="card"><h3>Status</h3><div id="us-status"></div></div>
+    <div class="card"><h3>Token usage</h3><div id="us-latest"></div><div id="us-days" class="bars"></div><p id="us-total" class="dim"></p></div>
+    <div class="card"><h3>By task</h3><p class="dim">What each kind of work spent, per model — the numbers to judge the model roles against. Counted from when tasks were first tagged.</p><div id="us-tasks" class="bars"></div></div>
+    <div class="card"><h3>Recent jobs</h3><div id="us-jobs-pills"></div><div id="us-jobs"></div></div>
+  </section>
+
+  <section id="tab-logs" class="tabpanel" hidden>
+    <div class="bar">
+      <select id="lg-source"><option value="">All sources</option></select>
+      <select id="lg-level"><option>INFO</option><option>WARNING</option><option>ERROR</option></select>
+      <input id="lg-q" type="search" placeholder="Search messages…" />
+      <label class="dim"><input type="checkbox" id="lg-auto" checked /> auto-refresh</label>
+      <button id="lg-refresh">Refresh</button>
+      <span id="lg-count" class="dim"></span>
+    </div>
+    <div class="tablewrap"><table><thead><tr><th>Time</th><th>Source</th><th>Level</th><th>Logger</th><th>Message</th></tr></thead><tbody id="lg-rows"></tbody></table></div>
+    <p class="dim">INFO and above, from the worker and this portal. The last few MB are kept; DEBUG output (which can contain content) is never written here.</p>
+  </section>
 
   <aside id="drawer" aria-hidden="true"></aside>
 
@@ -585,6 +684,205 @@ $("chips").addEventListener("click", (e) => { if (e.target.tagName === "BUTTON")
 
 // ---- boot ----
 load().then(loadHistory).catch((e) => say(e.message, "bad"));
+</script>
+<script>
+// ---- admin portal: tabs, status, and the operations that used to live in the phone app ----
+
+const ago = (iso) => {
+  if (!iso) return "never";
+  const secs = Math.max(0, (Date.now() - new Date(iso).getTime()) / 1000);
+  return secs < 60 ? "just now" : secs < 3600 ? `${Math.floor(secs / 60)}m ago` : secs < 86400 ? `${Math.floor(secs / 3600)}h ago` : `${Math.floor(secs / 86400)}d ago`;
+};
+const compact = (n) => (n < 1000 ? String(n) : n < 1e6 ? `${(n / 1000).toFixed(n < 1e4 ? 1 : 0)}K` : `${(n / 1e6).toFixed(1)}M`);
+const tile = (v, label) => `<div class="tile"><b>${esc(v)}</b><span>${esc(label)}</span></div>`;
+const bar = (label, frac, num, title = "") => `<span title="${esc(title)}">${esc(label)}</span><span class="track"><span class="fill" style="display:block;width:${Math.max(2, frac * 100)}%"></span></span><span class="n">${esc(num)}</span>`;
+
+// Poll one portal job until it finishes; resolves to the job, rejects on failure.
+async function portalJob(jobId, { onTick, timeoutMs = 900000 } = {}) {
+  const t0 = Date.now();
+  while (Date.now() - t0 < timeoutMs) {
+    await new Promise((r) => setTimeout(r, 1500));
+    const { jobs } = await api("/api/jobs?ids=" + jobId);
+    const j = jobs[0];
+    if (onTick) onTick(j, Math.round((Date.now() - t0) / 1000));
+    if (j.status === "failed") throw new Error(j.error || "failed");
+    if (j.status === "done") return j;
+  }
+  throw new Error("still running — check back later");
+}
+
+// ---- tabs ----
+const TABS = ["data", "maintain", "sync", "models", "usage", "logs"];
+const loaded = new Set();
+function showTab(name) {
+  if (!TABS.includes(name)) name = "data";
+  for (const t of TABS) $("tab-" + t).hidden = t !== name;
+  document.querySelectorAll("#tabs button").forEach((b) => b.classList.toggle("on", b.dataset.tab === name));
+  if (location.hash !== "#" + name) history.replaceState(null, "", "#" + name);
+  if (!loaded.has(name)) { loaded.add(name); tabLoaders[name]?.(); }
+  else if (name === "usage") tabLoaders.usage();
+  if (name === "logs") startLogRefresh(); else stopLogRefresh();
+}
+$("tabs").addEventListener("click", (e) => { if (e.target.dataset?.tab) showTab(e.target.dataset.tab); });
+
+// ---- always-visible status line ----
+async function loadStatus() {
+  try {
+    const s = await api("/api/status");
+    const jobs = Object.entries(s.job_counts || {}).map(([k, v]) => `${v} ${k}`).join(", ") || "no jobs";
+    $("status").textContent = `${s.items_count} items on the phone · snapshot ${ago(s.snapshot_updated_at)} · relay jobs: ${jobs}`;
+    $("status").title = s.snapshot_updated_at ? `last snapshot ${new Date(s.snapshot_updated_at).toLocaleString()}` : "the worker has not pushed a snapshot yet";
+  } catch (e) { $("status").textContent = "relay unreachable — " + e.message; }
+}
+setInterval(loadStatus, 60000);
+
+// ---- Maintain (AI) ----
+let mtPlan = [];
+function renderPlan(plan) {
+  mtPlan = plan.changes || [];
+  $("mt-summary").textContent = plan.summary || "";
+  $("mt-changes").innerHTML = mtPlan.length ? mtPlan.map((c, i) => {
+    const edits = (c.edits || []).map((e) => `${e.field}: ${Array.isArray(e.value) ? e.value.join(", ") : e.value}`).concat(c.generate_uid ? ["+ mint uid"] : []);
+    const empty = !edits.length && !c.pairings && !c.cocktails;
+    const pr = Array.isArray(c.pairings) && c.pairings.length ? "pairings: " + c.pairings.map((p) => p.profile + ((p.matches || []).length ? ` [${p.matches.map((m) => m.name || m.item).join(", ")}]` : "")).join(" · ") : "";
+    return `<li><label><input type="checkbox" data-i="${i}" ${empty ? "" : "checked"} /> <b>${esc(c.name || c.doc_id)}</b>${c.type ? ` (${esc(c.type)})` : ""}</label>
+      ${edits.length ? `<div class="edits">${esc(edits.join("  ·  "))}</div>` : ""}${empty ? `<div class="edits">no value proposed — nothing to apply</div>` : ""}
+      ${pr ? `<div class="edits">${esc(pr)}</div>` : ""}${c.reason ? `<div class="edits">${esc(c.reason)}</div>` : ""}</li>`;
+  }).join("") : "<li>No changes proposed.</li>";
+  $("mt-apply").disabled = !mtPlan.length;
+  $("mt-plan").hidden = false;
+}
+$("mt-propose").onclick = async () => {
+  const instruction = $("mt-instruction").value.trim();
+  if (!instruction) { $("mt-status").textContent = "Describe a change first."; return; }
+  $("mt-propose").disabled = true; $("mt-plan").hidden = true; $("mt-apply-status").textContent = "";
+  try {
+    const { job_id } = await api("/api/maintain/plan", { method: "POST", body: JSON.stringify({ instruction }) });
+    const j = await portalJob(job_id, { onTick: (_j, s) => { $("mt-status").textContent = `Planning… ${s}s`; } });
+    $("mt-status").textContent = `Proposed ${(j.result.changes || []).length} change(s) — review below.`;
+    renderPlan(j.result);
+  } catch (e) { $("mt-status").textContent = `Error: ${e.message}`; }
+  $("mt-propose").disabled = false;
+};
+$("mt-all").onclick = () => { const b = [...$("mt-changes").querySelectorAll("input")]; const all = b.every((x) => x.checked); b.forEach((x) => (x.checked = !all)); };
+$("mt-discard").onclick = () => { $("mt-plan").hidden = true; mtPlan = []; $("mt-status").textContent = ""; };
+$("mt-apply").onclick = async () => {
+  const chosen = [...$("mt-changes").querySelectorAll("input:checked")].map((x) => mtPlan[Number(x.dataset.i)]);
+  if (!chosen.length) { $("mt-apply-status").textContent = "Select at least one change."; return; }
+  $("mt-apply").disabled = true; $("mt-apply-status").textContent = `Applying ${chosen.length} change(s)…`;
+  try {
+    const { job_id } = await api("/api/maintain/apply", { method: "POST", body: JSON.stringify({ changes: chosen }) });
+    const j = await portalJob(job_id);
+    const bad = (j.result.results || []).filter((r) => r.status === "failed").map((r) => `  ✗ ${r.name}: ${r.error}`);
+    $("mt-apply-status").textContent = `Applied ${j.result.applied}, failed ${j.result.failed}.` + (bad.length ? "\n" + bad.join("\n") : "");
+    $("mt-plan").hidden = true; mtPlan = [];
+    load().catch(() => {});
+  } catch (e) { $("mt-apply-status").textContent = `Error: ${e.message}`; $("mt-apply").disabled = false; }
+};
+
+// ---- Sync ----
+function diffSection(title, hint, rows) {
+  return `<div class="diffsec"><div class="h">${esc(title)} (${rows.length})</div><div class="dim">${esc(hint)}</div><ul>${rows.map((r) => `<li>${esc(r.main)}${r.sub ? ` <span class="dim">${esc(r.sub)}</span>` : ""}</li>`).join("")}</ul></div>`;
+}
+function renderGap(st) {
+  const missing = (st.records || 0) - (st.vault_files || 0);
+  $("sy-pill").innerHTML = missing > 0 ? `<span class="pill bad">${missing} record(s) missing in Obsidian</span>`
+    : missing < 0 ? `<span class="pill warn">${-missing} vault file(s) with no record</span>` : `<span class="pill done">in sync</span>`;
+  $("sy-tiles").innerHTML = tile(st.records ?? "—", "Records") + tile(st.vault_files ?? "—", "Vault files");
+  const rwf = st.records_without_file || [], fwr = st.files_without_record || [], col = st.colliding_records || [];
+  $("sy-diff").innerHTML =
+    (rwf.length ? diffSection("Records with no vault file", "rebuild vault to restore", rwf.map((r) => ({ main: [r.producer, r.name].filter(Boolean).join(" — ") || r._id, sub: r.type }))) : "") +
+    (fwr.length ? diffSection("Vault files with no record", "rebuild records to import, or delete in Obsidian", fwr.map((f) => ({ main: f.path }))) : "") +
+    (col.length ? diffSection("Records sharing one vault file", "rename or re-date one so each gets its own file", col.map((c) => ({ main: c.path, sub: (c.records || []).map((r) => r.name || r._id).join(" + ") }))) : "");
+}
+async function syncRun(action, working, summarize, confirmText) {
+  if (confirmText && !confirm(confirmText)) return;
+  document.querySelectorAll("#tab-sync button").forEach((b) => (b.disabled = true));
+  $("sy-msg").textContent = working;
+  try {
+    const { job_id } = await api("/api/sync/" + action, { method: "POST" });
+    const j = await portalJob(job_id);
+    $("sy-msg").textContent = summarize ? summarize(j.result) : "";
+    renderGap(j.result);
+  } catch (e) { $("sy-msg").textContent = `Error: ${e.message}`; }
+  document.querySelectorAll("#tab-sync button").forEach((b) => (b.disabled = false));
+}
+$("sy-check").onclick = () => syncRun("status", "Checking…");
+$("sy-rebuild-vault").onclick = () => syncRun("rebuild-vault", "Rebuilding vault…", (r) => `Rebuilt ${r.rebuilt}, failed ${r.failed}.`, "Rebuild the Obsidian vault files from the database records? This re-creates files (including any deleted in Obsidian). It never changes the records.");
+$("sy-rebuild-records").onclick = () => syncRun("rebuild-records", "Importing from vault…", (r) => `Upserted ${r.upserted}, skipped ${r.skipped}, failed ${r.failed}.`, "Pull edits from the Obsidian vault back into the records? This adds/updates records from files that exist and never deletes a record.");
+$("sy-normalize").onclick = () => syncRun("normalize", "Normalizing records…", (r) => `Normalized ${r.changed}, skipped ${r.skipped}, failed ${r.failed}.`, "Re-check every record against the current schema and fix field inconsistencies? Deterministic and safe.");
+
+// ---- Models ----
+const ROLE_INFO = {
+  vision_model: ["Vision", "reads photos and labels, nothing else", "vision"],
+  research_model: ["Research", "capture · fetch details · pairings (web search + JSON, many calls)", "research"],
+  reasoning_model: ["Reasoning", "chat · detail reviewer · Maintain · Ask AI (judgement, long context)", "reasoning"],
+};
+async function loadModels() {
+  const m = await api("/api/models");
+  const label = (id) => { const x = m.models.find((y) => y.id === id); return x ? `${x.label} ${x.cost}` : id; };
+  $("md-roles").innerHTML = Object.entries(ROLE_INFO).map(([key, [name, desc, role]]) => `
+    <div class="role"><label for="md-${key}"><b>${name}</b></label>
+      <select id="md-${key}" data-key="${key}"><option value="">(default — ${esc(label(m.defaults[role]))})</option>
+        ${m.models.map((x) => `<option value="${esc(x.id)}" ${m.chosen[key] === x.id ? "selected" : ""}>${esc(x.label)} ${esc(x.cost)}</option>`).join("")}</select>
+      <small>${esc(desc)} — currently runs <b>${esc(label(m.effective[role]))}</b></small></div>`).join("");
+}
+$("md-save").onclick = async () => {
+  const body = {};
+  document.querySelectorAll("#md-roles select").forEach((sel) => (body[sel.dataset.key] = sel.value || null));
+  $("md-save").disabled = true; $("md-status").textContent = "Saving…";
+  try { await api("/api/models", { method: "PUT", body: JSON.stringify(body) }); $("md-status").textContent = "Saved — applies from the next call."; await loadModels(); }
+  catch (e) { $("md-status").textContent = `Error: ${e.message}`; }
+  $("md-save").disabled = false;
+};
+
+// ---- Usage & jobs ----
+const TASKS = { capture: "Capture", vision: "Reading photos", details: "Fetch details", chat: "Chat", repair: "Pairings", manage: "Maintain", lookup: "Ask AI", "": "Untagged" };
+async function loadUsage() {
+  const [s, u, j] = await Promise.all([api("/api/status"), api("/api/usage?days=14"), api("/api/relay-jobs?limit=10")]);
+  const jobTotal = Object.values(s.job_counts || {}).reduce((a, b) => a + b, 0);
+  $("us-status").innerHTML = `<div class="tiles">${tile(s.items_count, "Items on phone")}${tile(ago(s.snapshot_updated_at), "Snapshot")}${tile(jobTotal, "Relay jobs")}</div>`;
+  if (!u.days.length) { $("us-latest").innerHTML = ""; $("us-days").innerHTML = ""; $("us-total").textContent = "No model calls recorded yet."; }
+  else {
+    const d = u.days[0], isToday = d.day === new Date().toLocaleDateString("sv");
+    $("us-latest").innerHTML = `<div class="dim">${isToday ? "Today" : "Latest day — " + esc(d.day)}</div><div class="tiles">${tile(compact(d.input_tokens), "Input")}${tile(compact(d.output_tokens), "Output")}${tile(d.calls, "Calls")}</div>` +
+      (d.by_model.length > 1 ? `<div class="dim">${d.by_model.map((m) => `${esc(m.model)} ${compact(m.input_tokens + m.output_tokens)}`).join(" · ")}</div>` : "");
+    const peak = Math.max(...u.days.map((x) => x.input_tokens + x.output_tokens), 1);
+    $("us-days").innerHTML = u.days.map((x) => bar(x.day.slice(5), (x.input_tokens + x.output_tokens) / peak, compact(x.input_tokens + x.output_tokens), `${x.input_tokens.toLocaleString()} in, ${x.output_tokens.toLocaleString()} out, ${x.calls} call(s)`)).join("");
+    $("us-total").textContent = `All time: ${compact(u.totals.input_tokens)} in · ${compact(u.totals.output_tokens)} out · ${u.totals.calls} calls across ${u.totals.days} day(s) since ${u.totals.since}.`;
+  }
+  const tasks = u.by_task || [], tpeak = Math.max(...tasks.map((r) => r.input_tokens + r.output_tokens), 1);
+  $("us-tasks").innerHTML = tasks.length ? tasks.map((r) => bar(`${TASKS[r.site] ?? r.site} · ${r.model.split("/").pop()}`, (r.input_tokens + r.output_tokens) / tpeak, `${compact(r.input_tokens + r.output_tokens)} · ${r.calls}×`, `${r.input_tokens.toLocaleString()} in, ${r.output_tokens.toLocaleString()} out`)).join("") : `<span class="dim">Nothing recorded by task yet.</span>`;
+  const counts = {}; j.jobs.forEach((x) => (counts[x.status] = (counts[x.status] || 0) + 1));
+  $("us-jobs-pills").innerHTML = Object.entries(counts).map(([k, v]) => `<span class="pill ${k}">${v} ${k}</span>`).join("");
+  $("us-jobs").innerHTML = j.jobs.length ? `<table><tbody>${j.jobs.map((x) => `<tr><td>${esc(new Date(x.created_at).toLocaleString())}</td><td>${esc(x.type)}</td><td><span class="pill ${x.status}">${esc(x.status)}</span></td><td class="dim" style="white-space:normal">${x.status === "failed" && x.error ? esc(x.error.slice(0, 200)) : ""}</td></tr>`).join("")}</tbody></table>` : `<span class="dim">No jobs yet.</span>`;
+}
+
+// ---- Logs ----
+let logTimer = null;
+async function loadLogs() {
+  const qs = new URLSearchParams({ level: $("lg-level").value, q: $("lg-q").value, limit: "300" });
+  if ($("lg-source").value) qs.set("source", $("lg-source").value);
+  const r = await api("/api/logs?" + qs);
+  const cur = $("lg-source").value;
+  $("lg-source").innerHTML = `<option value="">All sources</option>` + r.sources.map((x) => `<option ${x === cur ? "selected" : ""}>${esc(x)}</option>`).join("");
+  $("lg-count").textContent = `${r.entries.length} line(s)`;
+  $("lg-rows").innerHTML = r.entries.map((e) => `<tr class="logrow"><td>${esc(new Date(e.t).toLocaleTimeString())}</td><td>${esc(e.source)}</td><td class="lv-${esc(e.level)}">${esc(e.level)}</td><td class="dim">${esc(e.logger)}</td><td>${esc(e.msg)}${e.exc ? `<details><summary>traceback</summary><pre>${esc(e.exc)}</pre></details>` : ""}</td></tr>`).join("") || `<tr><td colspan="5" class="dim">Nothing matches.</td></tr>`;
+}
+function startLogRefresh() { stopLogRefresh(); logTimer = setInterval(() => { if ($("lg-auto").checked) loadLogs().catch(() => {}); }, 5000); }
+function stopLogRefresh() { if (logTimer) clearInterval(logTimer); logTimer = null; }
+["lg-source", "lg-level"].forEach((id) => $(id).addEventListener("change", () => loadLogs().catch(() => {})));
+$("lg-q").addEventListener("input", () => loadLogs().catch(() => {}));
+$("lg-refresh").onclick = () => loadLogs().catch((e) => ($("lg-count").textContent = e.message));
+
+const tabLoaders = {
+  models: () => loadModels().catch((e) => ($("md-roles").textContent = e.message)),
+  usage: () => loadUsage().catch((e) => ($("us-status").textContent = e.message)),
+  logs: () => loadLogs().catch((e) => ($("lg-count").textContent = e.message)),
+  sync: () => $("sy-check").click(),
+};
+loadStatus();
+showTab((location.hash || "#data").slice(1));
 </script>
 </body>
 </html>

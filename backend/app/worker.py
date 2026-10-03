@@ -26,11 +26,9 @@ from app.logging_setup import secret_state, setup_logging
 from app.lookup_service import run_lookup
 from app.detail_fetch import apply_details, fetch_details
 from app.model_roles import model_for_role
-from app.manage_service import run_manage_apply, run_manage_plan, run_repair_pairings_items
 from app.reconcile import reconcile_vault_edits
 from app.record_service import delete_record, update_record
 from app.relay_client import RelayClient
-from app.sync_service import normalize_records, rebuild_records, rebuild_vault, sync_status
 
 logger = logging.getLogger("worker")
 
@@ -39,8 +37,7 @@ logger = logging.getLogger("worker")
 # waiting for the periodic timer (that lag is why a normalize/edit/delete can
 # look like it "didn't work" until the next push).
 _MUTATING_JOB_TYPES = {
-    "capture_photo", "capture_chat", "manage_apply",
-    "sync_rebuild_vault", "sync_rebuild_records", "sync_normalize",
+    "capture_photo", "capture_chat", "details_apply",
     "record_update", "record_delete",
 }
 
@@ -92,33 +89,10 @@ async def process_job(job: dict, settings: Settings, db: CouchDBClient) -> dict:
         )
         return {"answer": result.answer}
 
-    if job["type"] == "manage_plan":
-        # AI maintenance, phase 1: propose changes, write nothing.
-        return await run_manage_plan(
-            job["id"], settings, db,
-            instruction=payload["instruction"],
-            model_override=model_for("reasoning"),
-        )
-
-    if job["type"] == "manage_apply":
-        # Phase 2: apply the human-approved subset of a plan (also used for the
-        # approved subset of a regenerate-pairings plan — the changes carry a
-        # structured `pairings` field instead of `edits`).
-        return await run_manage_apply(
-            job["id"], settings, db, changes=payload["changes"],
-        )
-
-    # The three jobs below run the very same functions the admin page calls
-    # (taster-admin), so the phone app and the web page cannot drift apart.
-    if job["type"] == "repair_pairings_items":
-        # A few items' pairings, written as soon as they are done.
-        return await run_repair_pairings_items(
-            job["id"], settings, db,
-            doc_ids=payload["doc_ids"],
-            mode=payload.get("mode", "regenerate"),
-            model_override=model_for("research"),
-        )
-
+    # Fetching details is the one maintenance operation that stays reachable from
+    # the phone (next to the item it is for); everything administrative — pairings,
+    # sync, bulk Maintain, models, usage — lives in taster-admin on the NAS. The two
+    # jobs below run the very same functions the admin page calls.
     if job["type"] == "fetch_details":
         # Proposals only — nothing is written until details_apply.
         return await fetch_details(
@@ -132,18 +106,6 @@ async def process_job(job: dict, settings: Settings, db: CouchDBClient) -> dict:
 
     if job["type"] == "details_apply":
         return await apply_details(db, payload["doc_id"], payload["fields"])
-
-    if job["type"] == "sync_status":
-        return await sync_status(db)
-
-    if job["type"] == "sync_rebuild_vault":
-        return await rebuild_vault(db)
-
-    if job["type"] == "sync_rebuild_records":
-        return await rebuild_records(db)
-
-    if job["type"] == "sync_normalize":
-        return await normalize_records(db)
 
     if job["type"] == "record_update":
         return await update_record(db, payload["doc_id"], payload.get("fields") or {})
@@ -181,7 +143,7 @@ def _log_startup_config(settings: Settings) -> None:
 
 
 async def run_worker_loop() -> None:
-    setup_logging()
+    setup_logging("worker")
     settings = get_settings()
     _log_startup_config(settings)
 

@@ -18,8 +18,7 @@ from typing import Any, Literal
 
 JobType = Literal[
     "capture_photo", "capture_chat", "lookup",
-    "manage_plan", "manage_apply", "repair_pairings_items", "fetch_details", "details_apply",
-    "sync_status", "sync_rebuild_vault", "sync_rebuild_records", "sync_normalize",
+    "fetch_details", "details_apply",
     "record_update", "record_delete",
 ]
 JobStatus = Literal["pending", "processing", "done", "failed"]

@@ -33,6 +33,7 @@ from app.config import Settings
 logger = logging.getLogger("worker.models")
 
 ROLES = ("vision", "research", "reasoning")
+ROLES_KEYS = tuple(f"{r}_model" for r in ROLES)
 _LEGACY = {"vision": "image_model", "research": "text_model", "reasoning": "text_model"}
 
 
@@ -74,3 +75,10 @@ async def admin_overrides(relay: Any) -> dict[str, Any]:
         data = _cache[1] if _cache else {}
     _cache = (now, data)
     return data
+
+
+def forget_cache() -> None:
+    """Drop the cached Admin-tab choices — called after they are changed here, so
+    the very next operation sees the new model rather than the one from a minute ago."""
+    global _cache
+    _cache = None
