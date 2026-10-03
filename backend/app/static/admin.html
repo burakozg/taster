@@ -507,7 +507,10 @@ async function poll() {
     if (failedIds.length) { state.sel = new Set(failedIds); }
     if (Object.keys(state.proposals).length) { say(`Done — ${Object.keys(state.proposals).length} item(s) ready to review in “Proposed details”.`); return; }
     await refreshUntilFresh();
-    if (failedIds.length) say(`${failedIds.length} item(s) failed and are selected again — press the same button to retry them.`, "warnc");
+    if (failedIds.length) {
+      const why = [...new Set(Object.values(state.rowJob).filter((r) => r.status === "failed").map((r) => r.error).filter(Boolean))][0];
+      say(`${failedIds.length} item(s) failed${why ? ": " + why.slice(0, 200) : ""} — they are selected again; press the same button to retry.`, "warnc");
+    }
   } catch (e) { say(e.message, "bad"); } finally { polling = false; }
 }
 async function refreshUntilFresh() {
