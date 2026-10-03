@@ -132,6 +132,8 @@ const say = (t, cls = "") => { $("msg").textContent = t; $("msg").className = cl
 const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
 
 // ---- derived per-item facts ----
+// Same title the app's Search tab shows: "Producer — Name".
+const title = (i) => [i.producer, i.name].filter(Boolean).join(" — ") || i._id;
 const pairs = (i) => i.pairings_suggested || [];
 const facts = (i) => ({
   common: (i.common_notes || "").trim() ? 1 : 0,
@@ -165,10 +167,10 @@ async function load() {
 function shown() {
   const q = $("q").value.trim().toLowerCase(), t = $("type").value, is = $("issue").value;
   const { k, dir } = state.sort;
-  const val = (i) => (["common", "pairings", "matches"].includes(k) ? facts(i)[k] : k === "rating" ? (i.rating ?? -1) : (i[k] ?? ""));
+  const val = (i) => (["common", "pairings", "matches"].includes(k) ? facts(i)[k] : k === "rating" ? (i.rating ?? -1) : k === "name" ? title(i).toLowerCase() : (i[k] ?? ""));
   return state.items
     .filter((i) => (!t || i.type === t)
-      && (!q || `${i.name} ${i.producer || ""}`.toLowerCase().includes(q))
+      && (!q || title(i).toLowerCase().includes(q))
       && (!is || (is === "any" ? issues(i).length : issues(i).includes(is))))
     .sort((a, b) => (val(a) > val(b) ? 1 : val(a) < val(b) ? -1 : 0) * dir);
 }
@@ -185,7 +187,7 @@ function rowHtml(i) {
   const noCountry = !i.country_of_origin || i.country_of_origin === "unknown";
   return `<tr class="row" data-id="${esc(i._id)}">
     <td><input type="checkbox" class="pick" ${state.sel.has(i._id) ? "checked" : ""} /></td>
-    <td class="name">${esc(i.name)} <span class="dim">${esc(i.producer || "")}</span></td>
+    <td class="name">${i.producer ? `<span class="dim">${esc(i.producer)} —</span> ` : ""}${esc(i.name)}</td>
     <td>${i.rating ?? ""}</td><td>${esc(i.status || "")}</td>
     <td class="${noCountry ? "warnc" : ""}">${esc(i.country_of_origin || "")}</td>
     <td class="${f.common ? "good" : "bad"}">${f.common ? "✓" : "missing"}</td>
@@ -358,7 +360,7 @@ function openDrawer(id) {
   };
   const pr = pairs(item).map((p) => `<div class="pair"><b>${esc(p.profile)}</b><div class="dim">${esc(p.reason || "")}</div>
       <div>${(p.matches || []).map((m) => `<span class="tag">${esc(m.name || m.item)}</span>`).join(" ") || '<span class="dim">no match</span>'}</div></div>`).join("");
-  $("drawer").innerHTML = `<div class="bar"><b>${esc(item.name)}</b><span class="sp"></span><button id="dclose">Close</button></div>
+  $("drawer").innerHTML = `<div class="bar"><b>${esc(title(item))}</b><span class="sp"></span><button id="dclose">Close</button></div>
     ${(cat?.edit_fields || []).map(f).join("")}
     <div class="bar"><button id="dsave" class="primary">Save</button><button id="dregen">Regenerate pairings</button><button id="dmatch">Re-match</button><span id="dmsg" class="dim"></span></div>
     <h3>Pairings</h3>${pr || '<p class="dim">None.</p>'}`;
