@@ -237,18 +237,31 @@ def _coerce(field: str, raw: Any) -> Any:
     return s
 
 
-def _value_in_quote(field: str, value: Any, quote: str) -> bool:
-    """Hard facts must literally appear in the quote that is supposed to prove them."""
+# Words that carry no fact of their own, so a value is not faulted for them.
+_FILLER = frozenset({"and", "the", "with", "from", "for", "ex", "of", "in", "a", "an", "or", "casks", "cask"})
+
+
+def _missing_from_quote(field: str, value: Any, quote: str) -> list[str]:
+    """What the value asserts that its own quote does not say — [] if the quote
+    supports all of it. Hard facts must be in the quote that is supposed to prove
+    them: a model that adds "sherry" to a quote about "wine and Spanish Oak casks"
+    has invented that part, and this names it."""
     kind = _KINDS.get(field, "text")
     if kind == "summary":
-        return True
-    q = _norm(quote)
+        return []
     if kind in ("int", "float"):
         nums = {m.replace(",", ".") for m in re.findall(r"\d+(?:[.,]\d+)?", quote)}
         want = f"{value:g}" if isinstance(value, float) else str(value)
-        return want in nums or any(abs(float(n) - float(value)) < 1e-9 for n in nums)
+        ok = want in nums or any(abs(float(n) - float(value)) < 1e-9 for n in nums)
+        return [] if ok else [want]
+    quote_tokens = set(_norm(quote).split())
     parts = value if isinstance(value, list) else [value]
-    return all(_norm(str(p)) in q for p in parts)
+    tokens = [t for p in parts for t in _norm(str(p)).split() if len(t) >= 3 and t not in _FILLER]
+    return list(dict.fromkeys(t for t in tokens if t not in quote_tokens))
+
+
+def _value_in_quote(field: str, value: Any, quote: str) -> bool:
+    return not _missing_from_quote(field, value, quote)
 
 
 # ---- fetching a source page, safely ----
@@ -303,7 +316,12 @@ def _quote_on_page(quote: str, page: str) -> bool:
     """Every substantial fragment of the quote (split at ellipses) must be on the page."""
     page_n = _norm(page)
     fragments = [f for f in re.split(r"…|\.\.\.", quote) if len(_norm(f)) >= 12]
-    return bool(fragments) and all(_norm(f) in page_n for f in fragments)
+    if not fragments:
+        # A short quote ("ABV 43%") is a legitimate one for a hard fact; it has to
+        # appear whole, and must be long enough not to match by accident.
+        whole = _norm(quote)
+        return len(whole) >= 5 and whole in page_n
+    return all(_norm(f) in page_n for f in fragments)
 
 
 # ---- the workers ----
@@ -415,8 +433,9 @@ async def fetch_details(
                 else:
                     if not p["source_url"] or not p["quote"]:
                         p.update(evidence="rejected", reason="a value came back with no source URL or quote")
-                    elif not _value_in_quote(field, p["value"], p["quote"]):
-                        p.update(evidence="rejected", reason="the value is not in its own quote")
+                    elif (missing := _missing_from_quote(field, p["value"], p["quote"])):
+                        p.update(evidence="rejected",
+                                 reason=f"the value says more than its quote does — not in the quote: {', '.join(missing[:4])}")
                     elif (why := _check_schema(item, field, p["value"])):
                         p.update(evidence="rejected", reason=f"fails the note schema: {why}")
                     else:
