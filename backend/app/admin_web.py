@@ -226,7 +226,7 @@ def create_app() -> FastAPI:
         static file: about 1 MB raw, a quarter of that compressed, cacheable for a day."""
         return FileResponse(WORLD, media_type="application/json", headers={"Cache-Control": "private, max-age=86400"})
 
-    @app.get("/health", include_in_schema=False)
+    @app.get("/healthz", include_in_schema=False)
     async def health() -> dict:
         return {"status": "ok"}
 

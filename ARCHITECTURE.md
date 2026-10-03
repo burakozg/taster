@@ -638,6 +638,14 @@ http:
       middlewares: [homelabAuth-forward]
       priority: 1
       entryPoints: [web]
+    # /healthz carved out unauthenticated, as for podcast-digest and shortlist:
+    # the homelab status collector has no other way to probe a container that has
+    # no LAN address. It returns only {"status":"ok"}.
+    tasterAdmin-health:
+      rule: "Host(`taster-admin.<your-domain>`) && Path(`/healthz`)"
+      service: "tasterAdmin"
+      priority: 10
+      entryPoints: [web]
   services:
     tasterAdmin:
       loadBalancer:
