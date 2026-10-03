@@ -52,6 +52,10 @@ class ClaudeConfig(BaseModel):
     # Jev (TypeSafe) model for pairing matches — not an LLM role: it has its own
     # model list and key. None = Jev's own default. See model_roles.matching_model.
     matching_model: str | None = None
+    # A pairing may only point at an item YOU rated at least this many stars: the
+    # point of a match is "have this one", which is no recommendation for something
+    # you did not like or have not tried. Unrated and to-try items never qualify.
+    min_match_rating: float = 3.7
     # Per-role reasoning effort; None = the global `effort` below.
     effort_research: str | None = None
     effort_reasoning: str | None = None

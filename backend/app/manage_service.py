@@ -36,7 +36,7 @@ from app.items_query import query_all_items
 from app.markdown import render_markdown
 from app.model_output import ModelOutputError
 from app.model_roles import effort_for_role, model_for_role
-from app.pairing_match import ground_repair_changes
+from app.pairing_match import enforce_min_match_rating_changes, ground_repair_changes
 from app.providers import provider_for
 from app.schema import parse_any_note
 
@@ -411,6 +411,7 @@ async def run_repair_pairings_items(
             settings, db, model, job_id, targets, all_compact, len(items),
         )
     await ground_repair_changes(db, settings, changes, compact_by_id, matching_model)
+    enforce_min_match_rating_changes(settings, changes, compact_by_id)
 
     changed = {c.get("doc_id"): c for c in changes}
     for t in targets:

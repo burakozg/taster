@@ -45,6 +45,11 @@ claude:
   # (the portal's Models tab shows what Jev offers). Unset = Jev's own default.
   # matching_model: jev-latest
   #
+  # A pairing may only point at an item you rated at least this many stars.
+  # Unrated and to-try items never qualify. Applies to Jev's candidates and to any
+  # match a model picked itself.
+  # min_match_rating: 3.7
+  #
   # Reasoning effort per role (low | medium | high | xhigh | max); unset = `effort`.
   # effort_research: low
   # effort_reasoning: high

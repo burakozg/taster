@@ -87,7 +87,13 @@ async def choose_matches(
     if group is None:
         return None
 
-    candidates = await query_notes_impl(db, {"pair_group": group, "limit": CANDIDATE_LIMIT})
+    # Only items rated at least min_match_rating can be a match. Filtering in the
+    # query (not afterwards) means the CANDIDATE_LIMIT slots go to eligible items
+    # rather than being spent on ones that would be thrown away.
+    candidates = await query_notes_impl(db, {
+        "pair_group": group, "min_rating": settings.models.claude.min_match_rating,
+        "limit": CANDIDATE_LIMIT,
+    })
     by_id = {c["_id"]: c for c in candidates if c.get("_id")}
     if not by_id:
         return None  # nothing real to choose between — leave the caller's guess
@@ -248,3 +254,56 @@ def _describe(doc: dict[str, Any]) -> str:
     if common := doc.get("common_notes"):
         bits.append(str(common))
     return f"{label} — {'; '.join(bits)}" if bits else label
+
+
+# --- the rating rule, applied to ANY source of matches --------------------------
+#
+# Jev only ever sees eligible candidates (above), but a match can also be the
+# capture/maintenance model's own free-text pick — Jev unconfigured, down, or with
+# nothing to choose from leaves that pick in place (see choose_matches). The rule
+# has to hold for those too, so it is enforced on the final matches.
+
+def _eligible(rating: Any, minimum: float) -> bool:
+    return isinstance(rating, (int, float)) and rating >= minimum
+
+
+async def enforce_min_match_rating(db: CouchDBClient, settings: Settings, note: AnyNote) -> int:
+    """Capture path: drop matches that point at an item rated below the minimum
+    (or at no identifiable item — a name alone cannot be checked). Returns how many
+    were dropped."""
+    minimum = settings.models.claude.min_match_rating
+    dropped = 0
+    for suggestion in getattr(note, "pairings_suggested", None) or []:
+        kept = []
+        for m in suggestion.matches:
+            doc = await db.get_document(m.item) if m.item else None
+            if doc is not None and _eligible(doc.get("rating"), minimum):
+                kept.append(m)
+            else:
+                dropped += 1
+        suggestion.matches = kept
+    if dropped:
+        logger.info("pairing_match: dropped %d match(es) rated below %.1f", dropped, minimum)
+    return dropped
+
+
+def enforce_min_match_rating_changes(
+    settings: Settings, changes: list[dict[str, Any]], items_by_id: dict[str, dict[str, Any]],
+) -> int:
+    """Regenerate-pairings path: the same rule over a proposed plan. `items_by_id`
+    is the compact inventory the plan was built from, which carries `rating`."""
+    minimum = settings.models.claude.min_match_rating
+    dropped = 0
+    for change in changes:
+        for pairing in change.get("pairings") or []:
+            kept = []
+            for m in pairing.get("matches") or []:
+                record = items_by_id.get(m.get("item") or "")
+                if record is not None and _eligible(record.get("rating"), minimum):
+                    kept.append(m)
+                else:
+                    dropped += 1
+            pairing["matches"] = kept
+    if dropped:
+        logger.info("pairing_match: dropped %d match(es) rated below %.1f", dropped, minimum)
+    return dropped
