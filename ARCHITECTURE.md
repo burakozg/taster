@@ -605,6 +605,7 @@ that gets lost. Tabs:
 | Tab | What it does | Where it gets its data |
 |---|---|---|
 | Data | items grouped by type, data-quality filters, inline edit, regenerate / re-match pairings, Fetch details, chat over the vault, undo history | CouchDB directly |
+| Map | a world map with the countries your items come from highlighted (darker = more items); click one for its items, which open in the edit drawer. Free-text countries ("Scotland", "Türkiye") are matched to map shapes by an alias table; anything unmatched is listed under "Not on the map" | CouchDB directly; shapes from `static/world.json` |
 | Changes | what bulk operations replaced (fetched details, pairings), newest first; click a line for the old and new values, Undo restores the old | `admin/history.jsonl` (shared with the worker) |
 | Maintain (AI) | free-form bulk-edit plan → tick → apply | CouchDB directly; model = *reasoning* role |
 | Sync | records ↔ Obsidian vault check, rebuild vault, rebuild records, normalize | CouchDB directly |
@@ -720,3 +721,10 @@ falls back to the vision model doing the whole job, as before.
 `details`, `chat`, `repair`, `manage`, `lookup`) in the ledger — in both the worker
 and taster-admin, which pushes its own usage to the relay — and the Admin tab's
 "By task" list shows it. That is the data to judge a role's model against.
+
+**The map's shapes** are Natural Earth admin-0 countries (public domain, 1:50m) projected
+to SVG paths by `tools/build_world_map.mjs` and committed as `backend/app/static/world.json`
+(~1 MB, ~0.3 MB gzipped) — nothing is fetched at runtime and no mapping library is used. To
+regenerate: install `world-atlas`, `topojson-client` and `d3-geo` in a scratch directory and
+run the script (its header has the commands). A country value the map doesn't recognise goes
+into `ALIASES` in `admin.html` or is corrected on the item.

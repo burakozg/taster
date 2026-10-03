@@ -135,6 +135,25 @@
     .diff2 { display:grid; grid-template-columns:1fr 1fr; gap:6px 18px; font-size:13px; }
     .diff2 .col h4 { margin:0 0 6px; font-size:11px; text-transform:uppercase; letter-spacing:.04em; color:var(--dim); }
     .diff2 .pair { background:var(--surface); }
+    .mapgrid { display:grid; grid-template-columns:minmax(0,2.2fr) minmax(280px,1fr); gap:14px; align-items:start; }
+    @media (max-width:900px) { .mapgrid { grid-template-columns:1fr; } }
+    .mapbox { position:relative; background:var(--surface); border:1px solid var(--border); border-radius:10px; overflow:hidden; touch-action:none; }
+    #mp-svg { display:block; width:100%; height:auto; cursor:grab; user-select:none; }
+    #mp-svg.drag { cursor:grabbing; }
+    #mp-svg path.land { fill:var(--surface-2); stroke:var(--border); stroke-width:.4; vector-effect:non-scaling-stroke; }
+    #mp-svg path.has { fill:var(--accent); stroke:var(--surface); stroke-width:.5; cursor:pointer; vector-effect:non-scaling-stroke; }
+    #mp-svg path.has:hover { stroke:var(--text); stroke-width:1.2; }
+    #mp-svg path.sel { stroke:var(--text); stroke-width:1.8; }
+    #mp-svg circle.dot { fill:var(--accent); stroke:var(--surface); stroke-width:1; cursor:pointer; vector-effect:non-scaling-stroke; }
+    #mp-svg circle.dot.sel { stroke:var(--text); stroke-width:2; }
+    .tip { position:absolute; pointer-events:none; background:var(--text); color:var(--bg); font-size:12px; padding:3px 8px; border-radius:6px; white-space:nowrap; transform:translate(10px,10px); z-index:3; }
+    .mapbtns button { width:34px; padding:6px 0; } .mapbtns button#mp-reset { width:auto; padding:6px 12px; }
+    .mapside .card { margin-bottom:12px; }
+    .crow { display:grid; grid-template-columns:1fr auto; gap:8px; padding:6px 8px; border-radius:6px; cursor:pointer; }
+    .crow:hover, .crow.sel { background:var(--surface-2); } .crow.sel { font-weight:600; }
+    .crow .n { color:var(--dim); font-variant-numeric:tabular-nums; }
+    .irow { display:grid; grid-template-columns:auto 1fr auto; gap:8px; padding:6px 4px; border-top:1px solid var(--border); cursor:pointer; align-items:baseline; }
+    .irow:hover { background:var(--surface-2); } .irow .sub { color:var(--dim); font-size:12px; }
     .norows { margin:4px 0 0 18px; padding:0; font-size:12px; } .norows li { margin:1px 0; }
     .val { font-weight:600; } .old { color:var(--dim); text-decoration:line-through; }
   </style>
@@ -143,6 +162,7 @@
   <header class="top"><h1>Tasting Log admin</h1><div id="status" class="dim"></div></header>
   <nav id="tabs">
     <button data-tab="data" class="on">Data</button>
+    <button data-tab="map">Map</button>
     <button data-tab="changes">Changes</button>
     <button data-tab="maintain">Maintain (AI)</button>
     <button data-tab="sync">Sync</button>
@@ -228,6 +248,25 @@
 
   <div id="groups"></div>
 
+  </section>
+
+  <section id="tab-map" class="tabpanel" hidden>
+    <div class="bar">
+      <select id="mp-type"><option value="">All types</option></select>
+      <span id="mp-summary" class="dim"></span>
+      <span class="sp"></span>
+      <span class="mapbtns"><button id="mp-in" title="Zoom in">+</button><button id="mp-out" title="Zoom out">−</button><button id="mp-reset" title="Show the whole world">Reset</button></span>
+    </div>
+    <div class="mapgrid">
+      <div class="mapbox"><svg id="mp-svg" role="img" aria-label="World map; countries with items are highlighted"></svg>
+        <div id="mp-tip" class="tip" hidden></div></div>
+      <aside class="mapside">
+        <div id="mp-detail" class="card"></div>
+        <div class="card"><h3>Countries</h3><div id="mp-list"></div></div>
+        <div id="mp-missing" class="card" hidden></div>
+      </aside>
+    </div>
+    <p class="dim">Click a highlighted country to list its items. Darker means more items. Scroll to zoom, drag to move; the country list works too. Map: Natural Earth (public domain).</p>
   </section>
 
   <section id="tab-changes" class="tabpanel" hidden>
@@ -367,6 +406,7 @@ async function load() {
   state.sel = new Set([...state.sel].filter((id) => state.items.some((i) => i._id === id)));
   say("");
   render();
+  if (mp && mp.world && !$("tab-map").hidden) renderMap();
 }
 
 function shown() {
@@ -971,7 +1011,7 @@ async function portalJob(jobId, { onTick, timeoutMs = 900000 } = {}) {
 }
 
 // ---- tabs ----
-const TABS = ["data", "changes", "maintain", "sync", "models", "usage", "logs"];
+const TABS = ["data", "map", "changes", "maintain", "sync", "models", "usage", "logs"];
 const loaded = new Set();
 function showTab(name) {
   if (!TABS.includes(name)) name = "data";
@@ -1148,7 +1188,166 @@ function stopLogRefresh() { if (logTimer) clearInterval(logTimer); logTimer = nu
 $("lg-q").addEventListener("input", () => loadLogs().catch(() => {}));
 $("lg-refresh").onclick = () => loadLogs().catch((e) => ($("lg-count").textContent = e.message));
 
+// ---- Map: which countries your items come from ----
+// Item countries are free text ("Scotland", "Türkiye", "United States"), the map's
+// shapes carry Natural Earth names. Everything is folded to a lowercase, accent-free
+// key; ALIASES covers the usual other spellings, and the sub-national UK nations
+// all belong to the one United Kingdom shape (the list still shows "Scotland").
+const fold = (t) => String(t || "").normalize("NFD").replace(/[̀-ͯ]/g, "").toLowerCase().replace(/\./g, "").replace(/\s+/g, " ").trim();
+const ALIASES = {
+  "uk": "United Kingdom", "u k": "United Kingdom", "great britain": "United Kingdom", "britain": "United Kingdom",
+  "england": "United Kingdom", "scotland": "United Kingdom", "wales": "United Kingdom", "northern ireland": "United Kingdom",
+  "usa": "United States of America", "us": "United States of America", "u s": "United States of America", "u s a": "United States of America",
+  "united states": "United States of America", "america": "United States of America",
+  "turkiye": "Turkey", "czech republic": "Czechia", "north macedonia": "Macedonia", "holland": "Netherlands", "the netherlands": "Netherlands",
+  "ivory coast": "Côte d'Ivoire", "cote d'ivoire": "Côte d'Ivoire",
+  "democratic republic of the congo": "Dem. Rep. Congo", "dr congo": "Dem. Rep. Congo", "drc": "Dem. Rep. Congo", "republic of the congo": "Congo",
+  "dominican republic": "Dominican Rep.", "bosnia": "Bosnia and Herz.", "bosnia and herzegovina": "Bosnia and Herz.",
+  "central african republic": "Central African Rep.", "equatorial guinea": "Eq. Guinea", "south sudan": "S. Sudan",
+  "swaziland": "eSwatini", "cape verde": "Cabo Verde", "east timor": "Timor-Leste", "burma": "Myanmar",
+  "russian federation": "Russia", "korea": "South Korea", "republic of korea": "South Korea", "lao pdr": "Laos", "viet nam": "Vietnam",
+  "uae": "United Arab Emirates", "macau": "Macao", "faroe islands": "Faeroe Is.", "falkland islands": "Falkland Is.",
+  "trinidad": "Trinidad and Tobago", "antigua and barbuda": "Antigua and Barb.", "saint lucia": "Saint Lucia", "st lucia": "Saint Lucia",
+};
+const mp = { world: null, byKey: {}, view: null, vb: null, selected: null, type: "" };
+
+function resolveCountry(raw) {
+  const k = fold(raw);
+  if (!k || k === "unknown") return null;
+  const target = ALIASES[k] || null;
+  if (target) return target;
+  return mp.byKey[k] ? mp.byKey[k].name : null;
+}
+
+// Group the (type-filtered) items by the shape they belong to.
+function mapGroups() {
+  const groups = {}, missing = {};
+  for (const it of state.items) {
+    if (mp.type && it.type !== mp.type) continue;
+    const name = resolveCountry(it.country_of_origin);
+    if (name && mp.byKey[fold(name)]) (groups[name] ||= []).push(it);
+    else { const label = it.country_of_origin && fold(it.country_of_origin) !== "unknown" ? it.country_of_origin : "unknown"; (missing[label] ||= []).push(it); }
+  }
+  return { groups, missing };
+}
+
+function setViewBox(vb) { mp.vb = vb; $("mp-svg").setAttribute("viewBox", vb.map((n) => +n.toFixed(2)).join(" ")); }
+function zoomBy(f, cx, cy) {
+  const [x, y, w, h] = mp.vb, W = mp.world.width, H = mp.world.height;
+  const nw = Math.min(W, Math.max(W / 24, w / f)), nh = nw * (H / W);
+  const px = cx == null ? x + w / 2 : cx, py = cy == null ? y + h / 2 : cy;
+  const nx = Math.min(W - nw, Math.max(0, px - (px - x) * (nw / w))), ny = Math.min(H - nh, Math.max(0, py - (py - y) * (nh / h)));
+  setViewBox([nx, ny, nw, nh]);
+}
+
+// The type list comes from the categories, which can arrive after the map does (the
+// page may open straight on this tab) — so it is filled whenever the map draws.
+function fillMapTypes() {
+  const sel = $("mp-type");
+  if (sel.options.length > 1 || !state.cats.length) return;
+  for (const c of state.cats.filter((c) => c.is_item)) sel.add(new Option(c.label, c.type));
+}
+
+function renderMap() {
+  if (!mp.world) return;
+  fillMapTypes();
+  const { groups, missing } = mapGroups();
+  const names = Object.keys(groups);
+  const max = Math.max(1, ...names.map((n) => groups[n].length));
+  const total = names.reduce((a, n) => a + groups[n].length, 0);
+  $("mp-summary").textContent = `${names.length} countr${names.length === 1 ? "y" : "ies"} · ${total} item${total === 1 ? "" : "s"} on the map`;
+
+  // The shapes are drawn once per render; fill strength follows how many items.
+  const svg = $("mp-svg");
+  svg.innerHTML = mp.world.countries.map((c) => {
+    const g = groups[c.name];
+    if (!g) return `<path class="land" d="${c.d}"></path>`;
+    const strength = (0.45 + 0.55 * Math.sqrt(g.length / max)).toFixed(2);
+    return `<path class="has${mp.selected === c.name ? " sel" : ""}" data-c="${esc(c.name)}" style="fill-opacity:${strength}" d="${c.d}"><title>${esc(c.name)} — ${g.length} item${g.length === 1 ? "" : "s"}</title></path>`;
+  }).join("");
+  // A country a few pixels wide would be invisible even when highlighted: give it a dot.
+  svg.querySelectorAll("path.has").forEach((p) => {
+    const b = p.getBBox();
+    if (b.width < 7 && b.height < 7) {
+      const c = document.createElementNS("http://www.w3.org/2000/svg", "circle");
+      c.setAttribute("class", "dot" + (p.dataset.c === mp.selected ? " sel" : ""));
+      c.setAttribute("cx", b.x + b.width / 2); c.setAttribute("cy", b.y + b.height / 2); c.setAttribute("r", 4.5);
+      c.dataset.c = p.dataset.c; c.style.fillOpacity = p.style.fillOpacity;
+      c.innerHTML = p.querySelector("title").outerHTML;
+      svg.appendChild(c);
+    }
+  });
+
+  // Sidebar: countries ranked by item count (also the way to reach tiny ones).
+  const ranked = names.sort((a, b) => groups[b].length - groups[a].length || a.localeCompare(b));
+  $("mp-list").innerHTML = ranked.length ? ranked.map((n) => `<div class="crow${mp.selected === n ? " sel" : ""}" data-c="${esc(n)}"><span>${esc(n)}</span><span class="n">${groups[n].length}</span></div>`).join("") : `<span class="dim">No items with a known country.</span>`;
+  const miss = Object.entries(missing);
+  $("mp-missing").hidden = !miss.length;
+  $("mp-missing").innerHTML = miss.length ? `<h3>Not on the map</h3><div class="dim">${miss.map(([k, v]) => `${esc(k)} (${v.length})`).join(" · ")}</div><p class="dim" style="margin:6px 0 0">Unknown, or a name the map does not recognise — fix the country on the item, or add an alias.</p>` : "";
+  renderMapDetail(groups);
+}
+
+function renderMapDetail(groups) {
+  const box = $("mp-detail"), name = mp.selected, list = name && groups[name];
+  if (!list) { box.innerHTML = `<h3>Items</h3><p class="dim">Click a highlighted country to see what you have from there.</p>`; return; }
+  const items = [...list].sort((a, b) => (b.rating ?? -1) - (a.rating ?? -1));
+  box.innerHTML = `<h3>${esc(name)} <span class="dim" style="font-weight:normal">· ${items.length} item${items.length === 1 ? "" : "s"}</span></h3>` +
+    items.map((i) => `<div class="irow" data-id="${esc(i._id)}"><span>${ICONS[i.type] || ""}</span>
+      <span>${esc(title(i))}<div class="sub">${esc([i.type, i.country_of_origin !== name ? i.country_of_origin : "", i.region, i.status === "to-try" ? "to try" : ""].filter(Boolean).join(" · "))}</div></span>
+      <span>${i.rating ? "★ " + Number(i.rating).toFixed(1) : '<span class="dim">☆</span>'}</span></div>`).join("");
+}
+
+function selectCountry(name) {
+  mp.selected = mp.selected === name ? null : name;
+  renderMap();
+}
+
+async function loadMap() {
+  if (!mp.world) {
+    $("mp-summary").textContent = "Loading the map…";
+    mp.world = await api("/api/world-map");
+    mp.byKey = Object.fromEntries(mp.world.countries.map((c) => [fold(c.name), c]));
+    $("mp-svg").setAttribute("preserveAspectRatio", "xMidYMid meet");
+    setViewBox([0, 0, mp.world.width, mp.world.height]);
+  }
+  renderMap();
+}
+
+// interactions
+$("mp-svg").addEventListener("click", (e) => { if (mp.moved) return; const c = e.target.closest("[data-c]"); if (c) selectCountry(c.dataset.c); });
+$("mp-list").addEventListener("click", (e) => { const r = e.target.closest(".crow"); if (r) selectCountry(r.dataset.c); });
+$("mp-detail").addEventListener("click", (e) => { const r = e.target.closest(".irow"); if (r) openDrawer(r.dataset.id); });
+$("mp-type").addEventListener("change", () => { mp.type = $("mp-type").value; renderMap(); });
+$("mp-in").onclick = () => zoomBy(1.6);
+$("mp-out").onclick = () => zoomBy(1 / 1.6);
+$("mp-reset").onclick = () => mp.world && setViewBox([0, 0, mp.world.width, mp.world.height]);
+(() => {
+  const svg = $("mp-svg"), tip = $("mp-tip");
+  const toMap = (e) => { const r = svg.getBoundingClientRect(), [x, y, w, h] = mp.vb; return [x + ((e.clientX - r.left) / r.width) * w, y + ((e.clientY - r.top) / r.height) * h]; };
+  svg.addEventListener("wheel", (e) => { if (!mp.world) return; e.preventDefault(); const [px, py] = toMap(e); zoomBy(e.deltaY < 0 ? 1.25 : 1 / 1.25, px, py); }, { passive: false });
+  let drag = null;
+  svg.addEventListener("pointerdown", (e) => { if (!mp.world) return; drag = { x: e.clientX, y: e.clientY, vb: [...mp.vb] }; mp.moved = false; });
+  window.addEventListener("pointermove", (e) => {
+    if (!drag) return;
+    const dx = e.clientX - drag.x, dy = e.clientY - drag.y;
+    if (Math.abs(dx) + Math.abs(dy) > 4) { mp.moved = true; svg.classList.add("drag"); }
+    if (!mp.moved) return;
+    const r = svg.getBoundingClientRect(), [x, y, w, h] = drag.vb, W = mp.world.width, H = mp.world.height;
+    setViewBox([Math.min(W - w, Math.max(0, x - (dx / r.width) * w)), Math.min(H - h, Math.max(0, y - (dy / r.height) * h)), w, h]);
+  });
+  window.addEventListener("pointerup", () => { drag = null; svg.classList.remove("drag"); setTimeout(() => (mp.moved = false), 0); });
+  svg.addEventListener("pointermove", (e) => {
+    const c = e.target.closest("[data-c]");
+    if (!c) { tip.hidden = true; return; }
+    const box = svg.parentElement.getBoundingClientRect();
+    tip.textContent = c.querySelector("title")?.textContent || c.dataset.c;
+    tip.style.left = e.clientX - box.left + "px"; tip.style.top = e.clientY - box.top + "px"; tip.hidden = false;
+  });
+  svg.addEventListener("pointerleave", () => { tip.hidden = true; });
+})();
+
 const tabLoaders = {
+  map: () => loadMap().catch((e) => ($("mp-summary").textContent = e.message)),
   changes: () => loadHistory(),
   models: () => loadModels().catch((e) => ($("md-roles").textContent = e.message)),
   usage: () => loadUsage().catch((e) => ($("us-status").textContent = e.message)),

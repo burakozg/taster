@@ -30,6 +30,7 @@ the phone keeps only capture, search and per-item actions:
   POST /api/maintain/plan  {instruction}  free-form AI bulk-edit PLAN (writes nothing)
   POST /api/maintain/apply {changes}      apply the ticked part of a plan
   GET  /api/logs           the worker's and this portal's logs, filterable
+  GET  /api/world-map      country outlines for the Map tab (static, cacheable)
   GET  /api/jobs?ids=      progress of those jobs
   GET  /api/history        recent pairing changes, each with what it replaced
 
@@ -55,6 +56,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 from fastapi import FastAPI, HTTPException, Query
+from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
@@ -79,6 +81,7 @@ from app.sync_service import normalize_records, rebuild_records, rebuild_vault, 
 logger = logging.getLogger("admin")
 
 PAGE = Path(__file__).parent / "static" / "admin.html"
+WORLD = Path(__file__).parent / "static" / "world.json"
 MAX_ITEMS = 500
 HISTORY_KEEP = 500
 
@@ -210,11 +213,18 @@ def create_app() -> FastAPI:
             await usage.push(relay)   # whatever was booked since the last tick
 
     app = FastAPI(title="Tasting Log data", lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
+    app.add_middleware(GZipMiddleware, minimum_size=1000)
     app.state.settings, app.state.db, app.state.jobs, app.state.relay = settings, db, Jobs(), relay
 
     @app.get("/", include_in_schema=False)
     async def page() -> FileResponse:
         return FileResponse(PAGE, media_type="text/html", headers={"Cache-Control": "no-store"})
+
+    @app.get("/api/world-map")
+    async def world_map() -> FileResponse:
+        """Country outlines for the Map tab (built by tools/build_world_map.mjs). A
+        static file: about 1 MB raw, a quarter of that compressed, cacheable for a day."""
+        return FileResponse(WORLD, media_type="application/json", headers={"Cache-Control": "private, max-age=86400"})
 
     @app.get("/health", include_in_schema=False)
     async def health() -> dict:
