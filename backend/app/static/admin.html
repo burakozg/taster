@@ -1,0 +1,345 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Tasting Log — Data</title>
+  <link rel="icon" href="icon.svg" type="image/svg+xml" />
+  <style>
+    :root {
+      color-scheme: light dark;
+      --bg:#f7f2ea; --surface:#fffdfa; --surface-2:#f1e9dc; --text:#2a2320; --dim:#857567;
+      --border:#e7dccb; --accent:#b5651d; --accent-ink:#fff; --danger:#c0392b; --warn:#b07d1a; --ok:#4b7a3f;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root { --bg:#16120f; --surface:#211b17; --surface-2:#2a231e; --text:#efe6da; --dim:#a39382; --border:#3a3029; --accent:#e0913f; --accent-ink:#1a120a; --danger:#e8786b; --warn:#d9a73b; --ok:#8dbb7d; }
+    }
+    * { box-sizing: border-box; }
+    body { margin:0; background:var(--bg); color:var(--text); font:14px/1.4 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; padding:16px; }
+    h1 { font-size:18px; margin:0 0 12px; }
+        button, select, input, textarea { font:inherit; color:inherit; }
+    button { background:var(--surface-2); border:1px solid var(--border); border-radius:8px; padding:6px 12px; cursor:pointer; }
+    button.primary { background:var(--accent); color:var(--accent-ink); border-color:var(--accent); }
+    button:disabled { opacity:.45; cursor:default; }
+    input, select, textarea { background:var(--surface); border:1px solid var(--border); border-radius:8px; padding:6px 10px; }
+    .bar { display:flex; flex-wrap:wrap; gap:8px; align-items:center; margin-bottom:10px; }
+    .bar .sp { flex:1; }
+    .dim { color:var(--dim); }
+    .tablewrap { overflow-x:auto; background:var(--surface); border:1px solid var(--border); border-radius:10px; }
+    table { border-collapse:collapse; width:100%; }
+    th, td { text-align:left; padding:7px 10px; border-bottom:1px solid var(--border); white-space:nowrap; }
+    th { position:sticky; top:0; background:var(--surface-2); cursor:pointer; user-select:none; font-weight:600; }
+    tr.row:hover { background:var(--surface-2); }
+    td.name { white-space:normal; min-width:180px; }
+    .tag { display:inline-block; padding:1px 7px; border-radius:99px; font-size:12px; border:1px solid var(--border); }
+    .bad { color:var(--danger); } .warnc { color:var(--warn); } .good { color:var(--ok); }
+    .st-queued { color:var(--dim); } .st-running { color:var(--warn); } .st-done { color:var(--ok); } .st-failed { color:var(--danger); }
+    .progress { height:6px; background:var(--surface-2); border-radius:3px; overflow:hidden; margin:6px 0 12px; }
+    .progress > div { height:100%; background:var(--accent); width:0; transition:width .3s; }
+    #drawer { position:fixed; top:0; right:0; bottom:0; width:min(520px,100vw); background:var(--surface); border-left:1px solid var(--border); padding:16px; overflow-y:auto; transform:translateX(100%); transition:transform .2s; box-shadow:-8px 0 24px rgba(0,0,0,.15); z-index:5; }
+    #drawer.open { transform:none; }
+    .field { display:grid; grid-template-columns:130px 1fr; gap:8px; margin-bottom:8px; align-items:start; }
+    .field label { color:var(--dim); padding-top:7px; }
+    .field input, .field textarea, .field select { width:100%; }
+    .pair { border:1px solid var(--border); border-radius:8px; padding:8px; margin-bottom:8px; }
+    details { margin-top:16px; } summary { cursor:pointer; font-weight:600; }
+    .hist td { white-space:normal; }
+    #msg { min-height:20px; margin:6px 0; }
+  </style>
+</head>
+<body>
+  <h1>Data maintenance</h1>
+
+  <div class="bar">
+    <input id="q" type="search" placeholder="Filter by name or producer…" />
+    <select id="type"><option value="">All types</option></select>
+    <select id="issue">
+      <option value="">All items</option>
+      <option value="any">Needs attention</option>
+      <option value="no_common">No common notes</option>
+      <option value="no_pairings">No pairings</option>
+      <option value="no_matches">Pairings without a match</option>
+      <option value="no_country">Country unknown</option>
+      <option value="unrated">Tasted but unrated</option>
+    </select>
+    <span class="dim" id="count"></span>
+    <span class="sp"></span>
+    <button id="reload">Reload</button>
+  </div>
+
+  <div class="bar">
+    <span id="selinfo" class="dim">0 selected</span>
+    <button id="regen-sel" disabled>Regenerate pairings (selected)</button>
+    <button id="match-sel" disabled>Re-match only (selected)</button>
+    <span class="sp"></span>
+    <button id="regen-all">Regenerate all…</button>
+    <button id="match-all">Re-match all…</button>
+  </div>
+  <div id="confirm" class="bar" hidden>
+    <span id="confirm-text"></span>
+    <button id="confirm-yes" class="primary">Start</button>
+    <button id="confirm-no">Cancel</button>
+  </div>
+  <div class="progress" id="progwrap" hidden><div id="prog"></div></div>
+  <div id="msg" class="dim"></div>
+
+  <div class="tablewrap">
+    <table>
+      <thead><tr>
+        <th><input type="checkbox" id="selall" title="Select all shown" /></th>
+        <th data-k="name">Name</th><th data-k="type">Type</th><th data-k="rating">★</th>
+        <th data-k="status">Status</th><th data-k="country_of_origin">Country</th>
+        <th data-k="common">Common notes</th><th data-k="pairings">Pairings</th><th data-k="matches">Matched</th><th>Job</th>
+      </tr></thead>
+      <tbody id="rows"></tbody>
+    </table>
+  </div>
+
+  <details id="histbox">
+    <summary>Recent pairing changes (undo)</summary>
+    <div class="tablewrap" style="margin-top:8px"><table class="hist"><tbody id="hist"></tbody></table></div>
+    <p class="dim">The last 500 changes are kept.</p>
+  </details>
+
+  <aside id="drawer" aria-hidden="true"></aside>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const state = { items: [], cats: [], sel: new Set(), sort: { k: "name", dir: 1 }, rowJob: {}, jobs: [], pending: null, editing: null };
+
+// Sign-in is the homelab's central login, enforced by Traefik before a request
+// gets here; an expired session answers with a redirect to the login page.
+async function api(path, opts = {}) {
+  let r;
+  try {
+    r = await fetch(path, { ...opts, headers: { "Content-Type": "application/json", ...(opts.headers || {}) } });
+  } catch (e) {
+    // The login page lives on another origin, so a redirect there surfaces as a
+    // network error rather than a response.
+    location.reload();
+    throw new Error("Session expired — signing in again…");
+  }
+  if (r.redirected || r.status === 401 || r.status === 403 || (r.headers.get("content-type") || "").includes("text/html")) {
+    location.reload();  // session expired: the reload lands on the login form
+    throw new Error("Session expired — signing in again…");
+  }
+  if (!r.ok) throw new Error(`${r.status} ${(await r.text().catch(() => "")).slice(0, 200)}`);
+  return r.json();
+}
+
+const say = (t, cls = "") => { $("msg").textContent = t; $("msg").className = cls || "dim"; };
+const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+
+// ---- derived per-item facts ----
+const pairs = (i) => i.pairings_suggested || [];
+const facts = (i) => ({
+  common: (i.common_notes || "").trim() ? 1 : 0,
+  pairings: pairs(i).length,
+  matches: pairs(i).filter((p) => (p.matches || []).length).length,
+});
+function issues(i) {
+  if (i.type === "pairing") return [];
+  const f = facts(i), out = [];
+  if (!f.common) out.push("no_common");
+  if (!f.pairings) out.push("no_pairings");
+  else if (f.matches < f.pairings) out.push("no_matches");
+  if (!i.country_of_origin || i.country_of_origin === "unknown") out.push("no_country");
+  if (i.status === "tasted" && !i.rating) out.push("unrated");
+  return out;
+}
+
+// ---- load + render ----
+async function load() {
+  say("Loading…");
+  const [it, cat] = await Promise.all([api("/api/items"), api("/api/categories")]);
+  state.items = it.items.filter((i) => i.type !== "pairing");
+  state.cats = cat.categories || [];
+  const sel = $("type");
+  if (sel.options.length === 1) for (const c of state.cats.filter((c) => c.is_item)) sel.add(new Option(c.label, c.type));
+  state.sel = new Set([...state.sel].filter((id) => state.items.some((i) => i._id === id)));
+  say("");
+  render();
+}
+
+function shown() {
+  const q = $("q").value.trim().toLowerCase(), t = $("type").value, is = $("issue").value;
+  const { k, dir } = state.sort;
+  const val = (i) => (["common", "pairings", "matches"].includes(k) ? facts(i)[k] : (i[k] ?? ""));
+  return state.items
+    .filter((i) => (!t || i.type === t)
+      && (!q || `${i.name} ${i.producer || ""}`.toLowerCase().includes(q))
+      && (!is || (is === "any" ? issues(i).length : issues(i).includes(is))))
+    .sort((a, b) => (val(a) > val(b) ? 1 : val(a) < val(b) ? -1 : 0) * dir);
+}
+
+function render() {
+  const rows = shown();
+  $("count").textContent = `${rows.length} of ${state.items.length}`;
+  $("rows").innerHTML = rows.map((i) => {
+    const f = facts(i), job = state.rowJob[i._id];
+    return `<tr class="row" data-id="${esc(i._id)}">
+      <td><input type="checkbox" class="pick" ${state.sel.has(i._id) ? "checked" : ""} /></td>
+      <td class="name">${esc(i.name)} <span class="dim">${esc(i.producer || "")}</span></td>
+      <td><span class="tag">${esc(i.type)}</span></td>
+      <td>${i.rating ?? ""}</td><td>${esc(i.status || "")}</td>
+      <td class="${!i.country_of_origin || i.country_of_origin === "unknown" ? "warnc" : ""}">${esc(i.country_of_origin || "")}</td>
+      <td class="${f.common ? "good" : "bad"}">${f.common ? "✓" : "missing"}</td>
+      <td class="${f.pairings ? "" : "bad"}">${f.pairings}</td>
+      <td class="${f.matches < f.pairings ? "warnc" : ""}">${f.matches}/${f.pairings}</td>
+      <td class="${job ? "st-" + job.status : ""}" title="${esc(job?.error || "")}">${job ? job.status : ""}</td></tr>`;
+  }).join("");
+  const n = state.sel.size;
+  $("selinfo").textContent = `${n} selected`;
+  $("regen-sel").disabled = $("match-sel").disabled = !n;
+  $("selall").checked = rows.length > 0 && rows.every((i) => state.sel.has(i._id));
+}
+
+$("rows").addEventListener("click", (e) => {
+  const tr = e.target.closest("tr.row"); if (!tr) return;
+  const id = tr.dataset.id;
+  if (e.target.classList.contains("pick")) { e.target.checked ? state.sel.add(id) : state.sel.delete(id); render(); return; }
+  openDrawer(id);
+});
+$("selall").addEventListener("change", (e) => { for (const i of shown()) e.target.checked ? state.sel.add(i._id) : state.sel.delete(i._id); render(); });
+document.querySelector("thead").addEventListener("click", (e) => {
+  const k = e.target.dataset?.k; if (!k) return;
+  state.sort = { k, dir: state.sort.k === k ? -state.sort.dir : 1 }; render();
+});
+["q", "type", "issue"].forEach((id) => $(id).addEventListener("input", render));
+$("reload").addEventListener("click", () => load().catch((e) => say(e.message, "bad")));
+
+// ---- pairing jobs ----
+function ask(mode, ids, all) {
+  const n = all ? state.items.length : ids.length;
+  const what = mode === "rematch" ? "Re-match" : "Regenerate pairings for";
+  const cost = mode === "rematch" ? "no model calls, only the matching step" : `about ${Math.ceil(n / 5)} model calls (5 items each)`;
+  state.pending = { mode, ids, all };
+  $("confirm-text").textContent = `${what} ${n} item${n === 1 ? "" : "s"} — ${cost}. Previous pairings are kept for undo.`;
+  $("confirm").hidden = false;
+}
+$("regen-sel").onclick = () => ask("regenerate", [...state.sel]);
+$("match-sel").onclick = () => ask("rematch", [...state.sel]);
+$("regen-all").onclick = () => ask("regenerate", [], true);
+$("match-all").onclick = () => ask("rematch", [], true);
+$("confirm-no").onclick = () => { $("confirm").hidden = true; state.pending = null; };
+$("confirm-yes").onclick = async () => {
+  const p = state.pending; $("confirm").hidden = true; if (!p) return;
+  try {
+    const r = await api("/api/pairings", { method: "POST", body: JSON.stringify(p.all ? { all: true, mode: p.mode } : { doc_ids: p.ids, mode: p.mode }) });
+    state.jobs = r.jobs.map((j) => ({ ...j, status: "queued", done: false }));
+    state.rowJob = {};
+    for (const j of state.jobs) for (const d of j.doc_ids) state.rowJob[d] = { status: "queued" };
+    state.total = r.items; $("progwrap").hidden = false; render(); poll();
+  } catch (e) { say(e.message, "bad"); }
+};
+
+let polling = false;
+async function poll() {
+  if (polling) return; polling = true;
+  try {
+    while (state.jobs.some((j) => !j.done)) {
+      const open = state.jobs.filter((j) => !j.done).map((j) => j.job_id);
+      const { jobs } = await api("/api/jobs?ids=" + open.join(","));
+      for (const u of jobs) {
+        const j = state.jobs.find((x) => x.job_id === u.job_id); if (!j) continue;
+        const per = Object.fromEntries(((u.result || {}).results || []).map((r) => [r.doc_id, r]));
+        if (u.status === "done" || u.status === "failed") {
+          j.done = true;
+          for (const d of j.doc_ids) {
+            const r = per[d];
+            state.rowJob[d] = u.status === "failed" ? { status: "failed", error: u.error } : { status: r?.status === "applied" ? "done" : "failed", error: r?.error };
+          }
+        } else if (u.status === "processing") for (const d of j.doc_ids) state.rowJob[d] = { status: "running" };
+      }
+      const fin = Object.values(state.rowJob).filter((r) => r.status === "done" || r.status === "failed");
+      $("prog").style.width = `${(100 * fin.length) / Math.max(1, state.total)}%`;
+      const bad = fin.filter((r) => r.status === "failed").length;
+      say(`${fin.length}/${state.total} items finished${bad ? `, ${bad} failed` : ""}`, bad ? "warnc" : "dim");
+      render();
+      await new Promise((r) => setTimeout(r, 3000));
+    }
+    say("All jobs finished. Refreshing…");
+    await refreshUntilFresh();
+  } catch (e) { say(e.message, "bad"); } finally { polling = false; }
+}
+async function refreshUntilFresh() {
+  await load();
+  say("Up to date.");
+  loadHistory();
+}
+
+// ---- history / undo ----
+async function loadHistory() {
+  try {
+    const { entries } = await api("/api/history");
+    $("hist").innerHTML = entries.slice(0, 60).map((h, n) => `<tr>
+      <td>${esc(new Date(h.at).toLocaleString())}</td><td>${esc(h.name)}</td><td class="dim">${esc(h.mode)}</td>
+      <td class="dim">was ${h.previous.pairings.length} pairing(s)</td>
+      <td><button data-n="${n}">Undo</button></td></tr>`).join("") || `<tr><td class="dim">Nothing yet.</td></tr>`;
+    state.history = entries;
+  } catch (e) { /* history is a convenience */ }
+}
+$("hist").addEventListener("click", async (e) => {
+  const n = e.target.dataset?.n; if (n === undefined) return;
+  const h = state.history[n]; e.target.disabled = true;
+  try {
+    await saveRecord(h.doc_id, { pairings_suggested: h.previous.pairings, cocktail_pairings: h.previous.cocktails });
+    say(`Restored previous pairings for ${h.name}.`, "good"); load();
+  } catch (err) { say(err.message, "bad"); e.target.disabled = false; }
+});
+
+// ---- edit drawer ----
+async function saveRecord(doc_id, fields) {
+  return api("/api/record/update", { method: "POST", body: JSON.stringify({ doc_id, fields }) });
+}
+
+function openDrawer(id) {
+  const item = state.items.find((i) => i._id === id); if (!item) return;
+  const cat = state.cats.find((c) => c.type === item.type);
+  state.editing = id;
+  const f = (spec) => {
+    const v = item[spec.key], k = spec.kind, key = esc(spec.key);
+    let input;
+    if (k === "textarea") input = `<textarea data-f="${key}" rows="4">${esc(v)}</textarea>`;
+    else if (k === "bool") input = `<select data-f="${key}" data-kind="bool"><option value=""></option><option value="true" ${v === true ? "selected" : ""}>yes</option><option value="false" ${v === false ? "selected" : ""}>no</option></select>`;
+    else if (k === "status") input = `<select data-f="${key}"><option ${v === "tasted" ? "selected" : ""}>tasted</option><option ${v === "to-try" ? "selected" : ""}>to-try</option></select>`;
+    else if (k === "tags") input = `<input data-f="${key}" data-kind="tags" value="${esc((v || []).join(", "))}" />`;
+    else input = `<input data-f="${key}" data-kind="${k === "number" ? "number" : "text"}" value="${esc(v)}" />`;
+    return `<div class="field"><label>${key}</label>${input}</div>`;
+  };
+  const pr = pairs(item).map((p) => `<div class="pair"><b>${esc(p.profile)}</b><div class="dim">${esc(p.reason || "")}</div>
+      <div>${(p.matches || []).map((m) => `<span class="tag">${esc(m.name || m.item)}</span>`).join(" ") || '<span class="dim">no match</span>'}</div></div>`).join("");
+  $("drawer").innerHTML = `<div class="bar"><b>${esc(item.name)}</b><span class="sp"></span><button id="dclose">Close</button></div>
+    ${(cat?.edit_fields || []).map(f).join("")}
+    <div class="bar"><button id="dsave" class="primary">Save</button><button id="dregen">Regenerate pairings</button><button id="dmatch">Re-match</button><span id="dmsg" class="dim"></span></div>
+    <h3>Pairings</h3>${pr || '<p class="dim">None.</p>'}`;
+  $("drawer").classList.add("open"); $("drawer").setAttribute("aria-hidden", "false");
+  $("dclose").onclick = closeDrawer;
+  $("dregen").onclick = () => { closeDrawer(); ask("regenerate", [id]); };
+  $("dmatch").onclick = () => { closeDrawer(); ask("rematch", [id]); };
+  $("dsave").onclick = async () => {
+    const fields = {};
+    for (const el of $("drawer").querySelectorAll("[data-f]")) {
+      const key = el.dataset.f, kind = el.dataset.kind, raw = el.value.trim();
+      let v = raw;
+      if (kind === "number") v = raw === "" ? null : Number(raw);
+      else if (kind === "tags") v = raw ? raw.split(",").map((s) => s.trim()).filter(Boolean) : [];
+      else if (kind === "bool") v = raw === "" ? null : raw === "true";
+      else if (raw === "" && item[key] == null) continue;
+      if (JSON.stringify(v) !== JSON.stringify(item[key] ?? (kind === "tags" ? [] : kind === "text" ? "" : null))) fields[key] = v;
+    }
+    if (!Object.keys(fields).length) { $("dmsg").textContent = "No changes."; return; }
+    $("dsave").disabled = true; $("dmsg").textContent = "Saving…";
+    try { await saveRecord(id, fields); Object.assign(item, fields); $("dmsg").textContent = "Saved."; render(); }
+    catch (e) { $("dmsg").textContent = e.message; $("dmsg").className = "bad"; }
+    $("dsave").disabled = false;
+  };
+}
+function closeDrawer() { $("drawer").classList.remove("open"); $("drawer").setAttribute("aria-hidden", "true"); }
+document.addEventListener("keydown", (e) => { if (e.key === "Escape") closeDrawer(); });
+
+// ---- boot ----
+load().then(loadHistory).catch((e) => say(e.message, "bad"));
+</script>
+</body>
+</html>

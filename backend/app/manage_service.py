@@ -176,7 +176,7 @@ MANAGE_PLAN_SCHEMA = {
 # of its empty fields.
 _ENRICHABLE_FIELDS = (
     "common_notes", "notes", "producer", "country_of_origin", "region",
-    "abv", "cask", "age_years", "tags", "uid",
+    "abv", "cask", "bottler", "age_years", "tags", "uid",
 )
 
 
@@ -315,6 +315,123 @@ def _repair_compact(records: list[dict]) -> list[dict]:
     return [{k: r[k] for k in _REPAIR_FIELDS if k in r} for r in records]
 
 
+async def _repair_batch(
+    settings: Settings,
+    db: CouchDBClient,
+    model: str,
+    batch_id: str,
+    targets: list[dict],
+    all_compact: list[dict],
+    inventory_size: int,
+) -> list[dict]:
+    """One model call that proposes pairings for `targets`, seeing the FULL
+    inventory so matches can come from the whole vault."""
+    claude_cfg = settings.models.claude
+    prompt = (
+        "Regenerate cross-category pairing suggestions. Draw all `matches` from "
+        f"the FULL inventory below.\n\nFull inventory ({inventory_size}):\n"
+        f"{json.dumps(all_compact)}\n\n"
+        f"Produce a change for ONLY these {len(targets)} target items:\n"
+        f"{json.dumps(_repair_compact(targets))}"
+    )
+    provider = provider_for(model)
+    if provider is None:
+        raise ManageFailed(
+            f"{model!r} is not a recognised OpenRouter or Mistral model id "
+            f"— pick a model in Admin → Models, or fix image_model/"
+            f"text_model in config.yaml"
+        )
+    data = await provider.extract_structured(
+        settings, db,
+        job_id=batch_id, model=model,
+        system_prompt=REPAIR_SYSTEM_PROMPT, text=prompt,
+        image_b64=None, image_media_type=None,
+        use_web_search=True, output_schema=REPAIR_PAIRINGS_SCHEMA,
+        site="repair", max_output_tokens=claude_cfg.max_tokens_manage,
+        # Researches per-item, same rationale as run_manage_plan below.
+        web_search_max_uses=claude_cfg.web_search_max_uses_manage,
+    )
+    return data.get("changes") or []
+
+
+async def run_repair_pairings_items(
+    job_id: str,
+    settings: Settings,
+    db: CouchDBClient,
+    *,
+    doc_ids: list[str],
+    mode: str = "regenerate",
+    model_override: str | None = None,
+) -> dict:
+    """Regenerate (or just re-match) pairings for specific items and WRITE them.
+
+    This is the unit of work behind the /manage page: a small job (the caller
+    chunks to `repair_batch_size`) that saves as soon as it finishes, so a
+    failure costs one chunk rather than the whole vault. Each result carries the
+    `previous` pairings/cocktails so the change can be undone.
+
+    mode="regenerate": new profiles + reasons from the model, matches grounded.
+    mode="rematch":    keep the stored profiles/reasons, redo only the matching
+                       against the vault as it is now. No model call."""
+    claude_cfg = settings.models.claude
+    model = model_override or claude_cfg.text_model
+
+    records = await query_all_items(db)
+    items = [r for r in records if r.get("type") != "pairing"]
+    all_compact = _repair_compact(items)
+    compact_by_id = {r["_id"]: r for r in all_compact if r.get("_id")}
+    by_id = {r["_id"]: r for r in items if r.get("_id")}
+    targets = [by_id[d] for d in doc_ids if d in by_id]
+    results: list[dict] = [
+        {"doc_id": d, "status": "failed", "error": "record not found"}
+        for d in doc_ids if d not in by_id
+    ]
+
+    if mode == "rematch":
+        if not settings.typesafe_api_key:
+            raise ManageFailed("re-matching needs TYPESAFE_API_KEY — without it there is nothing to match with")
+        changes = [
+            {
+                "doc_id": t["_id"], "name": t.get("name"), "type": t.get("type"),
+                "pairings": [
+                    {k: v for k, v in p.items() if k != "matches"}
+                    for p in (t.get("pairings_suggested") or []) if p.get("profile")
+                ],
+            }
+            for t in targets
+        ]
+        changes = [c for c in changes if c["pairings"]]
+    else:
+        changes = await _repair_batch(
+            settings, db, model, job_id, targets, all_compact, len(items),
+        )
+    await ground_repair_changes(db, settings, changes, compact_by_id)
+
+    changed = {c.get("doc_id"): c for c in changes}
+    for t in targets:
+        change = changed.get(t["_id"])
+        name = t.get("name") or t["_id"]
+        if change is None:
+            results.append({"doc_id": t["_id"], "name": name, "status": "failed",
+                            "error": "no pairings to match" if mode == "rematch" else "the model returned nothing for this item"})
+            continue
+        previous = {
+            "pairings": t.get("pairings_suggested") or [],
+            "cocktails": t.get("cocktail_pairings") or [],
+        }
+        if mode == "rematch":
+            change.pop("cocktails", None)
+        try:
+            await _apply_one(db, {**change, "doc_id": t["_id"], "uid": t.get("uid")})
+            results.append({"doc_id": t["_id"], "name": name, "status": "applied", "previous": previous})
+        except Exception as e:  # noqa: BLE001 — one bad item must not sink the chunk
+            results.append({"doc_id": t["_id"], "name": name, "status": "failed", "error": str(e)})
+            logger.warning("repair items %s: failed doc_id=%s: %s", job_id, t["_id"], e)
+    applied = sum(r["status"] == "applied" for r in results)
+    logger.info("repair items %s (%s): applied=%d failed=%d", job_id, mode, applied, len(results) - applied)
+    return {"applied": applied, "failed": len(results) - applied, "mode": mode, "results": results}
+
+
 async def run_repair_pairings_plan(
     manage_id: str,
     settings: Settings,
@@ -339,39 +456,13 @@ async def run_repair_pairings_plan(
     all_compact = _repair_compact(items)
     compact_by_id = {r["_id"]: r for r in all_compact if r.get("_id")}
 
-    async def _run_batch(targets: list[dict], batch_no: int) -> list[dict]:
-        prompt = (
-            "Regenerate cross-category pairing suggestions. Draw all `matches` from "
-            f"the FULL inventory below.\n\nFull inventory ({len(items)}):\n"
-            f"{json.dumps(all_compact)}\n\n"
-            f"Produce a change for ONLY these {len(targets)} target items:\n"
-            f"{json.dumps(_repair_compact(targets))}"
-        )
-        batch_id = f"{manage_id}#b{batch_no}"
-        provider = provider_for(model)
-        if provider is None:
-            raise ManageFailed(
-                f"{model!r} is not a recognised OpenRouter or Mistral model id "
-                f"— pick a model in Admin → Models, or fix image_model/"
-                f"text_model in config.yaml"
-            )
-        data = await provider.extract_structured(
-            settings, db,
-            job_id=batch_id, model=model,
-            system_prompt=REPAIR_SYSTEM_PROMPT, text=prompt,
-            image_b64=None, image_media_type=None,
-            use_web_search=True, output_schema=REPAIR_PAIRINGS_SCHEMA,
-            site="repair", max_output_tokens=claude_cfg.max_tokens_manage,
-            # Researches per-item, same rationale as run_manage_plan below.
-            web_search_max_uses=claude_cfg.web_search_max_uses_manage,
-        )
-        return data.get("changes") or []
-
     size = max(1, claude_cfg.repair_batch_size)
     batches = [items[i:i + size] for i in range(0, len(items), size)]
     all_changes: list[dict] = []
     for n, batch in enumerate(batches, 1):
-        batch_changes = await _run_batch(batch, n)
+        batch_changes = await _repair_batch(
+            settings, db, model, f"{manage_id}#b{n}", batch, all_compact, len(items),
+        )
         # Ground each change's `matches` in Jev before the plan is returned
         # for review — so what gets approved is already the typed decision,
         # not the maintenance model's own guess quietly swapped out later at

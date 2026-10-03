@@ -22,6 +22,8 @@ dependencies = [
     # Grounds pairing_match.py's Jev call — see that module's docstring.
     # Only exercised when TYPESAFE_API_KEY is set.
     "typesafe-sdk>=0.7",
+    "fastapi>=0.142.2",
+    "uvicorn>=0.30",
 ]
 
 # This service is run in place (`python -m app.worker`), not distributed as an

@@ -374,7 +374,7 @@ Shared base (`schema.py` `BaseNote`, on every **item** note):
 
 | Type | Fields beyond the shared base |
 |---|---|
-| `whisky` | `category`, `region`, `peated`, `cask`, `age_years`, `abv` (shared key with `beer`/`raki` — strength is on every whisky label) |
+| `whisky` | `category`, `region`, `bottler` (independent bottlers only), `peated`, `cask`, `age_years`, `abv` (shared key with `beer`/`raki` — strength is on every whisky label) |
 | `cigar` | `wrapper`, `vitola`, `strength` |
 | `coffee` | `brew_method` (see below), `roaster`, `origin`, `process`, `roast_level`, plus espresso dial-in: `grind_size` (free text, e.g. "medium-fine" or "metal filter"), `dose_g`, `brew_time_s`, `grinder`, `machine` — all captured only when stated, default empty (no assumed rig) and editable in the PWA |
 | `pipe` | `blend_type`, `cut`, `components` (list of leaf, e.g. Virginia/Latakia/Perique), `strength`, `room_note`, `tin_date` |
@@ -597,3 +597,41 @@ Confirmed (not placeholders, but environment-specific facts baked into
 remote invocation in `deploy.sh`/`INSTALL.md` uses that absolute path
 explicitly; there's no standalone `docker-compose` binary, only `docker
 compose` (v2.29.1-qnap2) as a plugin subcommand.
+
+## Data-maintenance UI (`taster-admin`)
+
+A third container on the NAS, from the same image as the worker
+(`python -m app.admin_web`). It reads and writes CouchDB directly, so it needs
+neither the Fly relay nor its job queue. It lists every item with data-quality
+filters, edits fields in place, and regenerates or re-matches pairings for one,
+selected or all items. Pairing work runs as chunks of `repair_batch_size` items,
+each written as soon as it finishes, with the replaced pairings kept in
+`admin/history.jsonl` for undo.
+
+**Authentication is the homelab's central login** (`homelab-auth`, enforced by
+Traefik's `forwardAuth`) — the app has no key of its own. That is only sound
+because the container publishes **no port** and sits on `homelab-internal`, so
+Traefik is the only way to reach it. Do not add `ports:`.
+
+Traefik's `dynamic-config.yml` lives on the NAS, not in this repo. The entries
+that route and gate it (mirroring shortlist's):
+
+```yaml
+http:
+  routers:
+    tasterAdmin-web:
+      rule: "Host(`taster-admin.<your-domain>`)"
+      service: "tasterAdmin"
+      middlewares: [homelabAuth-forward]
+      priority: 1
+      entryPoints: [web]
+  services:
+    tasterAdmin:
+      loadBalancer:
+        servers:
+          - url: "http://taster-admin:8088"
+```
+
+`./deploy check` (with `ADMIN_HOSTNAME` set in `.deploy.env`) requests the
+hostname without a session and expects the login redirect — a 200 would mean the
+gate is missing.

@@ -78,6 +78,17 @@ ship_couchdb_config() {
   COUCHDB_CONFIG_SHIPPED=true
 }
 
+# taster-admin keeps its undo history in ${NAS_APP_DIR}/admin, mounted into a
+# read-only container that runs as uid 1000. Docker would otherwise create the
+# directory root-owned the first time, and the history writes would fail
+# quietly (undo is optional, so nothing else would notice).
+ship_admin_dir() {
+  echo "== preparing the admin data directory =="
+  nas_ssh "mkdir -p '${NAS_APP_DIR}/admin' && chmod 777 '${NAS_APP_DIR}/admin'" \
+    || die "Couldn't create ${NAS_APP_DIR}/admin on the NAS."
+  echo "  ✓ ${NAS_APP_DIR}/admin"
+}
+
 # ── ship ──────────────────────────────────────────────────────────────────────
 do_ship() {
   nas_require_reachable
@@ -95,6 +106,7 @@ do_ship() {
   nas_put deploy-out/docker-compose.yml "${NAS_APP_DIR}/docker-compose.yml"
 
   ship_couchdb_config
+  ship_admin_dir
 }
 
 # ── apply ─────────────────────────────────────────────────────────────────────
@@ -115,7 +127,13 @@ do_apply() {
   nas_wait_reachable "CouchDB" "http://${APP_LAN_IP_COUCHDB}:5984" "/_up" "2..|401" \
     || die "Deployed, but CouchDB is not reachable over the LAN — see above."
   echo
-  echo "done. Worker logs:"
+  # Healthy inside the container is all the NAS side can promise: the app has no
+  # published port, and whether Traefik routes to it is `./deploy check`'s job.
+  nas_ssh "i=0; while [ \$i -lt 24 ]; do s=\$('${NAS_DOCKER_BIN}' inspect -f '{{.State.Health.Status}}' taster-admin 2>/dev/null); [ \"\$s\" = healthy ] && exit 0; i=\$((i+1)); sleep 5; done; exit 1" \
+    || die "taster-admin did not become healthy — ssh in and: docker logs taster-admin"
+  echo "✓ taster-admin healthy"
+  echo
+  echo "done. Admin UI: http://${ADMIN_HOSTNAME:-taster-admin.example.lan}/   Worker logs:"
   echo "  ssh -p $NAS_SSH_PORT $NAS_SSH \"'$NAS_DOCKER_BIN' logs -f taster-worker\""
 }
 
@@ -141,6 +159,16 @@ do_check() {
     echo "    reach its own macvlan children — probe from another machine, not by"
     echo "    ssh-ing in and curling from there."
   }
+  echo
+  echo "══ Admin UI ══════════════════════════════════════════════════"
+  # Unauthenticated, the central login must answer with a redirect (3xx): that
+  # proves Traefik is routing the hostname AND the gate is in front of it. A 200
+  # here would mean the app is reachable without logging in.
+  if [ -n "${ADMIN_HOSTNAME:-}" ]; then
+    nas_probe "Admin UI (expects the login redirect)" "http://${ADMIN_HOSTNAME}" "/" "3.."
+  else
+    echo "  (set ADMIN_HOSTNAME in .deploy.env to probe the login gate)"
+  fi
 }
 
 usage() {

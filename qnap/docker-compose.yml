@@ -1,6 +1,7 @@
 # Tasting Log — QNAP Container Station Application config.
 #
-# Just two services now: CouchDB and the worker. There's no reverse proxy,
+# Three services: CouchDB, the worker, and the data-maintenance web UI
+# (taster-admin — reached only through Traefik, behind the central login). There's no reverse proxy,
 # no DuckDNS, no port-forwarding — the worker never accepts an inbound
 # connection at all. It polls the Fly relay (relay/fly.toml) outbound for
 # jobs and posts results back the same way, which works through any NAT/
@@ -188,8 +189,65 @@ services:
       # bridge itself (couchdb). See the networking note in the header.
       - taster-internal
 
+  taster-admin:
+    # The data-maintenance web UI (backend/app/admin_web.py): edit fields, and
+    # regenerate / re-match pairings for one, some or all items. SAME image as
+    # the worker, different command — nothing extra to build or ship. It talks
+    # to CouchDB directly over taster-internal, so it needs none of the Fly
+    # relay's job queue, and nothing about it is on the internet.
+    #
+    # Reached through Traefik at a hostname under the homelab's shared domain,
+    # behind the central login (homelab-auth, via Traefik's forwardAuth) — no key
+    # of its own. That holds ONLY because this service publishes no port and is
+    # reachable solely over homelab-internal (the bridge shared with Traefik):
+    # never add `ports:` here, it would be a way around the login. The Traefik
+    # router/service for it live in Traefik's own dynamic-config.yml on the NAS
+    # (not in this repo) — see ARCHITECTURE.md for the entry to add.
+    image: taster-worker:nas
+    container_name: taster-admin
+    command: ["python", "-m", "app.admin_web"]
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    user: "1000:100"
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: 512m
+    depends_on:
+      taster-couchdb:
+        condition: service_healthy
+    env_file:
+      - /share/Container/taster/.env
+    environment:
+      - TZ=Europe/Stockholm
+      # Fixed, so a stray ADMIN_PORT in .env can't move the listener away from
+      # the port Traefik's service points at.
+      - ADMIN_PORT=8088
+      - ADMIN_DATA_DIR=/data
+    volumes:
+      # Undo history (history.jsonl). `./deploy` creates the directory and makes
+      # it writable for uid 1000.
+      - /share/Container/taster/admin:/data
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request as u; u.urlopen('http://127.0.0.1:8088/health', timeout=3)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    networks:
+      - taster-internal   # CouchDB
+      - homelab-internal  # Traefik reaches it here as http://taster-admin:8088
+
 networks:
   qnet-static-eth1-dc7e3a:
+    external: true
+  # Shared with Traefik and the other homelab apps (created outside this file).
+  homelab-internal:
     external: true
   # Private to this Application — created by compose, standard bridge
   # driver, so service-name DNS and container-to-container traffic work
