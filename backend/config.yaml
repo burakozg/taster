@@ -41,6 +41,10 @@ claude:
   # research_model: deepseek/deepseek-v4-pro
   # reasoning_model: deepseek/deepseek-v4-pro
   #
+  # Jev (TypeSafe) model for pairing matches — not an LLM role, it has its own list
+  # (the portal's Models tab shows what Jev offers). Unset = Jev's own default.
+  # matching_model: jev-latest
+  #
   # Reasoning effort per role (low | medium | high | xhigh | max); unset = `effort`.
   # effort_research: low
   # effort_reasoning: high

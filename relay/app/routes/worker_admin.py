@@ -33,6 +33,11 @@ from app.models_catalog import (
 )
 
 ROLE_SETTINGS = ("vision_model", "research_model", "reasoning_model")
+# Jev's model for pairing matches. Not in MODEL_CATALOG: that lists LLMs, and the
+# relay holds no Jev key to ask what Jev offers — the portal validates the name
+# against Jev's live list before saving; here it only has to be a sane identifier.
+MATCHING_SETTING = "matching_model"
+_MATCHING_OK = __import__("re").compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$")
 
 router = APIRouter(prefix="/worker/admin", tags=["worker-admin"], dependencies=[Depends(require_worker_key)])
 
@@ -47,7 +52,7 @@ async def get_settings() -> dict:
     # Pruned so the page shows "default" rather than a retired id its dropdown
     # can no longer render — what the worker will actually receive.
     s = migrate_model_settings(prune_unknown_models(get_admin_settings()))
-    return {role: s.get(role) for role in ROLE_SETTINGS}
+    return {key: s.get(key) for key in (*ROLE_SETTINGS, MATCHING_SETTING)}
 
 
 class AdminSettings(BaseModel):
@@ -55,6 +60,7 @@ class AdminSettings(BaseModel):
     vision_model: str | None = None
     research_model: str | None = None
     reasoning_model: str | None = None
+    matching_model: str | None = None
 
 
 @router.put("/settings")
@@ -63,6 +69,8 @@ async def put_settings(body: AdminSettings) -> dict:
         value = getattr(body, field)
         if value is not None and value not in MODEL_IDS:
             raise HTTPException(status_code=400, detail=f"{field}: unknown model id {value!r}")
+    if body.matching_model is not None and not _MATCHING_OK.match(body.matching_model):
+        raise HTTPException(status_code=400, detail="matching_model: not a valid model name")
     set_admin_settings({k: v for k, v in body.model_dump().items() if v is not None})
     return {"ok": True, **body.model_dump()}
 

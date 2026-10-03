@@ -220,6 +220,7 @@
       <h3>Models</h3>
       <p class="dim">Three roles. A vision model only reads photos; the rest is text work, split by shape — many cheap web-search lookups versus fewer judgement calls. A choice applies to the next call, from the phone or from here.</p>
       <div id="md-roles"></div>
+      <div id="md-matching"></div>
       <div class="bar"><button id="md-save" class="primary">Save</button><span id="md-status" class="dim"></span></div>
       <p class="dim">€ is relative cost. mistral-* models need MISTRAL_API_KEY, vendor/model ones go through OpenRouter (OPENROUTER_API_KEY) — both in the worker's .env.</p>
     </div>
@@ -818,9 +819,20 @@ const ROLE_INFO = {
   research_model: ["Research", "capture · fetch details · pairings (web search + JSON, many calls)", "research"],
   reasoning_model: ["Reasoning", "chat · detail reviewer · Maintain · Ask AI (judgement, long context)", "reasoning"],
 };
+let matchingStored = null;
 async function loadModels() {
   const m = await api("/api/models");
   const label = (id) => { const x = m.models.find((y) => y.id === id); return x ? `${x.label} ${x.cost}` : id; };
+  const mt = m.matching;
+  matchingStored = mt.chosen || null;
+  $("md-matching").innerHTML = !mt.configured
+    ? `<div class="role"><label><b>Matching (Jev)</b></label><div class="dim">Not configured — set TYPESAFE_API_KEY in the worker's .env. Until then pairing matches are the research model's own guess.</div></div>`
+    : `<div class="role"><label for="md-matching_model"><b>Matching (Jev)</b></label>
+        <select id="md-matching_model" data-key="matching_model"><option value="">(Jev's default${mt.config_default ? " — config.yaml: " + esc(mt.config_default) : ""})</option>
+          ${mt.options.map((o) => `<option value="${esc(o.name)}" ${mt.chosen === o.name ? "selected" : ""}>${esc(o.name)}</option>`).join("")}
+          ${mt.chosen && !mt.options.some((o) => o.name === mt.chosen) ? `<option value="${esc(mt.chosen)}" selected>${esc(mt.chosen)} (not offered by Jev any more)</option>` : ""}</select>
+        <small>${mt.options.length ? mt.options.map((o) => `<b>${esc(o.name)}</b>: ${esc(o.description)}`).join("<br>") : "Jev's model list could not be read."}<br>
+          Picks the owned items that fit each pairing profile — at capture and when pairings are regenerated or re-matched. Re-match only is the cheap way to compare models: it makes no LLM calls.</small></div>`;
   $("md-roles").innerHTML = Object.entries(ROLE_INFO).map(([key, [name, desc, role]]) => `
     <div class="role"><label for="md-${key}"><b>${name}</b></label>
       <select id="md-${key}" data-key="${key}"><option value="">(default — ${esc(label(m.defaults[role]))})</option>
@@ -829,7 +841,10 @@ async function loadModels() {
 }
 $("md-save").onclick = async () => {
   const body = {};
-  document.querySelectorAll("#md-roles select").forEach((sel) => (body[sel.dataset.key] = sel.value || null));
+  document.querySelectorAll("#tab-models select").forEach((sel) => (body[sel.dataset.key] = sel.value || null));
+  // The Jev row is absent when Jev isn't configured; carry the stored value through
+  // so saving the LLM roles never clears it by omission.
+  if (!("matching_model" in body)) body.matching_model = matchingStored;
   $("md-save").disabled = true; $("md-status").textContent = "Saving…";
   try { await api("/api/models", { method: "PUT", body: JSON.stringify(body) }); $("md-status").textContent = "Saved — applies from the next call."; await loadModels(); }
   catch (e) { $("md-status").textContent = `Error: ${e.message}`; }

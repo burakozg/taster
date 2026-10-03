@@ -66,9 +66,10 @@ from app import history
 from app.detail_fetch import FETCHABLE, apply_details, fetch_details
 from app.items_query import query_all_items
 from app.logging_setup import setup_logging
+from app.jev_models import list_jev_models
 from app.logs import read_logs, sources as log_sources
 from app.manage_service import run_manage_apply, run_manage_plan, run_repair_pairings_items
-from app.model_roles import admin_overrides, model_for_role
+from app.model_roles import admin_overrides, matching_model, model_for_role
 from app.record_service import update_record
 from app.relay_client import RelayClient
 from app import usage
@@ -103,6 +104,8 @@ class SettingsBody(BaseModel):
     vision_model: str | None = None
     research_model: str | None = None
     reasoning_model: str | None = None
+    # Jev's model for pairing matches (not an LLM role — see jev_models.py).
+    matching_model: str | None = None
 
 
 class MaintainPlanBody(BaseModel):
@@ -169,6 +172,7 @@ async def _runner(app: FastAPI) -> None:
             result = await run_repair_pairings_items(
                 job_id, settings, db, doc_ids=job["doc_ids"], mode=job["mode"],
                 model_override=model_for_role(settings, "research", ov),
+                matching_model=matching_model(settings, ov),
             )
             job.update(status="done", result=result)
         except Exception as e:  # noqa: BLE001 — a failed chunk must not stop the queue
@@ -331,13 +335,36 @@ def create_app() -> FastAPI:
     @app.get("/api/models")
     async def models() -> dict:
         catalog = await relay_call(relay.admin_models())
-        chosen = {k: v for k, v in (await relay_call(relay.get_model_settings())).items() if k in model_roles.ROLES_KEYS}
+        all_chosen = await relay_call(relay.get_model_settings())
+        chosen = {k: v for k, v in all_chosen.items() if k in model_roles.ROLES_KEYS}
         defaults = {r: model_for_role(settings, r) for r in model_roles.ROLES}
         effective = {r: model_for_role(settings, r, chosen) for r in model_roles.ROLES}
-        return {"models": catalog, "chosen": chosen, "defaults": defaults, "effective": effective}
+        jev = await list_jev_models(settings)
+        return {
+            "models": catalog, "chosen": chosen, "defaults": defaults, "effective": effective,
+            # Jev: its own list, fetched from Jev. `configured` False = no TYPESAFE_API_KEY,
+            # so pairing matches stay the research model's own guess and there is
+            # nothing to choose.
+            "matching": {
+                "configured": bool(settings.typesafe_api_key),
+                "options": jev,
+                "chosen": all_chosen.get("matching_model"),
+                "config_default": settings.models.claude.matching_model,
+            },
+        }
 
     @app.put("/api/models")
     async def set_models(body: SettingsBody) -> dict:
+        # Validate a CHANGED Jev model against Jev's own list. An unchanged value is
+        # carried through untouched, so saving the LLM roles never fails because Jev
+        # is unreachable or has retired the name (the Models tab flags that case).
+        current = (await relay_call(relay.get_model_settings())).get("matching_model")
+        if body.matching_model and body.matching_model != current:
+            known = {m["name"] for m in await list_jev_models(settings)}
+            if body.matching_model not in known:
+                raise HTTPException(status_code=400, detail=(
+                    f"Jev does not offer {body.matching_model!r}"
+                    + (f" (it offers: {', '.join(sorted(known))})" if known else " — or its model list could not be read")))
         await relay_call(relay.admin_put_settings(body.model_dump()))
         model_roles.forget_cache()   # the next operation picks the new choice up at once
         return {"ok": True}

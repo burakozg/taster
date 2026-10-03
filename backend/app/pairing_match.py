@@ -67,6 +67,7 @@ async def choose_matches(
     item_type: str,
     state: dict[str, Any],
     profiles: list[str],
+    matching_model: str | None = None,
 ) -> list[list[dict[str, str | None]]] | None:
     """One Jev call grounding every profile in `profiles` (in order) against
     real opposite-side inventory. Each result is a list of 0-2
@@ -111,9 +112,11 @@ async def choose_matches(
     )
     try:
         client = AsyncTypeSafeClient(api_key=settings.typesafe_api_key)
-        response = await client.system_one(state=state, questions=questions)
+        # model=None is Jev's own default; a name is the portal's Models-tab choice.
+        response = await client.system_one(state=state, questions=questions, model=matching_model)
     except TypeSafeError as e:
-        logger.warning("pairing_match: Jev call failed, keeping the existing matches: %s", e)
+        logger.warning("pairing_match: Jev call failed (model=%s), keeping the existing matches: %s",
+                       matching_model or "default", e)
         return None
 
     out: list[list[dict[str, str | None]]] = []
@@ -136,7 +139,7 @@ async def choose_matches(
 
 
 async def ground_pairing_matches(
-    db: CouchDBClient, settings: Settings, note: AnyNote,
+    db: CouchDBClient, settings: Settings, note: AnyNote, matching_model: str | None = None,
 ) -> None:
     """Capture path: mutate `note.pairings_suggested[*].matches` in place."""
     suggestions = getattr(note, "pairings_suggested", None)
@@ -148,7 +151,7 @@ async def ground_pairing_matches(
 
     state = note.model_dump(mode="json", exclude=_EXCLUDE_FROM_STATE, exclude_none=True)
     results = await choose_matches(
-        db, settings, note.item_type(), state, [profile for _, profile in indexed]
+        db, settings, note.item_type(), state, [profile for _, profile in indexed], matching_model,
     )
     if results is None:
         return
@@ -161,6 +164,7 @@ async def ground_repair_changes(
     settings: Settings,
     changes: list[dict[str, Any]],
     items_by_id: dict[str, dict[str, Any]],
+    matching_model: str | None = None,
 ) -> None:
     """Regenerate-pairings path: mutate each change's `pairings[*].matches`
     in place — one Jev call per item (its own `state`, its own 1-2
@@ -205,7 +209,7 @@ async def ground_repair_changes(
         state = {k: v for k, v in record.items() if k != "_id"}
         try:
             results = await choose_matches(
-                db, settings, item_type, state, [profile for _, profile in indexed]
+                db, settings, item_type, state, [profile for _, profile in indexed], matching_model,
             )
         except Exception as e:  # noqa: BLE001 — one item's grounding must not sink the batch
             logger.warning(

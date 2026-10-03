@@ -48,6 +48,13 @@ def model_for_role(settings: Settings, role: str, overrides: dict[str, Any] | No
     )
 
 
+def matching_model(settings: Settings, overrides: dict[str, Any] | None = None) -> str | None:
+    """The Jev model for pairing matches: the Admin tab's choice, else config.yaml's,
+    else None — which tells Jev to use its own default. Jev's models are not in the
+    LLM catalog (see jev_models.py)."""
+    return (overrides or {}).get("matching_model") or settings.models.claude.matching_model or None
+
+
 def effort_for_role(settings: Settings, role: str) -> str | None:
     """The role's reasoning effort, or None for the provider's global default."""
     return getattr(settings.models.claude, f"effort_{role}", None)

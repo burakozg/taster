@@ -203,6 +203,7 @@ async def run_capture(
     image_media_type: str | None = None,
     vision_model: str | None = None,
     research_model: str | None = None,
+    matching_model: str | None = None,
 ) -> CaptureResult:
     claude_cfg = settings.models.claude
     # Admin-panel choice (delivered per job by the relay) wins over the
@@ -403,7 +404,7 @@ async def run_capture(
 
     if note.item_type() != "pairing":
         try:
-            await ground_pairing_matches(db, settings, note)
+            await ground_pairing_matches(db, settings, note, matching_model)
         except Exception as e:  # noqa: BLE001 — grounding must never fail a capture
             logger.warning("capture %s pairing grounding failed: %s", capture_id, e)
 

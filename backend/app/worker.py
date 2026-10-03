@@ -25,7 +25,7 @@ from app.items_query import query_all_items
 from app.logging_setup import secret_state, setup_logging
 from app.lookup_service import run_lookup
 from app.detail_fetch import apply_details, fetch_details
-from app.model_roles import model_for_role
+from app.model_roles import matching_model, model_for_role
 from app.reconcile import reconcile_vault_edits
 from app.record_service import delete_record, update_record
 from app.relay_client import RelayClient
@@ -68,6 +68,7 @@ async def process_job(job: dict, settings: Settings, db: CouchDBClient) -> dict:
             image_media_type=payload.get("image_media_type"),
             vision_model=model_for("vision"),
             research_model=model_for("research"),
+            matching_model=matching_model(settings, overrides),
         )
         return result.model_dump(mode="json")
 
@@ -75,6 +76,7 @@ async def process_job(job: dict, settings: Settings, db: CouchDBClient) -> dict:
         result = await run_capture(
             job["id"], settings, db, source="chat", text=payload["text"],
             research_model=model_for("research"),
+            matching_model=matching_model(settings, overrides),
         )
         return result.model_dump(mode="json")
 

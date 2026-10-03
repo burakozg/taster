@@ -703,6 +703,13 @@ job) and taster-admin (it fetches them from the relay's `/worker/settings`, cach
 a minute), so an operation runs on the same model from either front end.
 `effort_research` / `effort_reasoning` set reasoning effort per role.
 
+**Jev (pairing matches) has its own choice**, `matching_model` — not an LLM role: Jev
+(TypeSafe) has its own model list and key. The portal's Models tab lists what Jev
+offers *live* (`jev_models.py`), validates a changed name against that list, and the
+choice rides to the worker like the role choices; unset means Jev's own default. It
+applies at capture and when pairings are regenerated or re-matched, and *Re-match
+only* (no LLM calls) is the cheap way to compare Jev models.
+
 **Photos are read, then reasoned about.** `image_reader.read_image` has the vision
 model transcribe what a photo shows and the text on it, verbatim; the research (or,
 for Ask AI, reasoning) model works from that text. A photo with no legible text

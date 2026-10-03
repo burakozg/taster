@@ -366,6 +366,7 @@ async def run_repair_pairings_items(
     doc_ids: list[str],
     mode: str = "regenerate",
     model_override: str | None = None,
+    matching_model: str | None = None,
 ) -> dict:
     """Regenerate (or just re-match) pairings for specific items and WRITE them.
 
@@ -409,7 +410,7 @@ async def run_repair_pairings_items(
         changes = await _repair_batch(
             settings, db, model, job_id, targets, all_compact, len(items),
         )
-    await ground_repair_changes(db, settings, changes, compact_by_id)
+    await ground_repair_changes(db, settings, changes, compact_by_id, matching_model)
 
     changed = {c.get("doc_id"): c for c in changes}
     for t in targets:

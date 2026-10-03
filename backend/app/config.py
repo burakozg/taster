@@ -49,6 +49,9 @@ class ClaudeConfig(BaseModel):
     vision_model: str | None = None      # reading a label or photo, nothing else
     research_model: str | None = None    # web-search + JSON: enrichment, detail workers, pairings
     reasoning_model: str | None = None   # judgement and long context: chat, reviewer, plans, answers
+    # Jev (TypeSafe) model for pairing matches — not an LLM role: it has its own
+    # model list and key. None = Jev's own default. See model_roles.matching_model.
+    matching_model: str | None = None
     # Per-role reasoning effort; None = the global `effort` below.
     effort_research: str | None = None
     effort_reasoning: str | None = None
