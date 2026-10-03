@@ -40,6 +40,9 @@ You extract structured tasting-log entries for whisky, cigars, coffee, pipe \
 tobacco, beer, chocolate, and rakı.
 
 `producer` is the brand/distillery/roaster ("My Father", "Glen Scotia"); \
+for a whisky from an INDEPENDENT bottler (Gordon & MacPhail, Signatory, \
+Cadenhead, Douglas Laing, …) `producer` stays the distillery and the bottler \
+goes in `bottler` — omit `bottler` for an official distillery bottling; \
 `name` is the product/expression ONLY ("Blue Series", "Double Cask") and \
 must never repeat the producer. Parse carefully: in "smoked My Father Blue \
 Series", "smoked" is the user's verb, the producer is "My Father". If \
@@ -157,7 +160,7 @@ a bare recommendation with no rating.
 
 The schema below lists every field across every category, but almost none of \
 them apply to any single item. That rule is about the FACTUAL per-category \
-fields (cask, age_years, abv, wrapper, blend_type, dose_g, …): include one \
+fields (cask, bottler, age_years, abv, wrapper, blend_type, dose_g, …): include one \
 only when you genuinely know or can determine its value for THIS item, and \
 OMIT the rest entirely. NEVER fill an unknown or inapplicable factual field \
 with a placeholder like "", 0, or false just to satisfy the shape — an omitted \
@@ -196,12 +199,19 @@ async def run_capture(
     image_b64: str | None = None,
     image_media_type: str | None = None,
     model_override: str | None = None,
+    enrichment_model: str | None = None,
 ) -> CaptureResult:
     claude_cfg = settings.models.claude
     # Admin-panel choice (delivered per job by the relay) wins over the
     # baked-in config.yaml default. providers.py maps the resolved id to its
     # OpenRouter/Mistral provider module.
     model = model_override or claude_cfg.image_model
+    # Enrichment (common_notes, pairings) is reasoning + web search + JSON, not
+    # vision. The model that read the label photo is the wrong one for it: the
+    # vision model answered the narrow enrichment call with ~15 tokens (an empty
+    # object) while the text model fills the same fields reliably. So the
+    # enrichment step always runs on the text model.
+    enrich_model = enrichment_model or claude_cfg.text_model
 
     # Read outright-stated facts from the user's text before the model sees it.
     # A chat capture has no rating slider, so "3,6 stars" is the only rating
@@ -260,6 +270,18 @@ async def run_capture(
             logger.debug("capture %s raw model output: %s", capture_id, json.dumps(data))
             raise CaptureFailed(f"structured output failed validation: {e}") from e
 
+        # An item with no usable name cannot be a tasting record: it is filed
+        # as "untitled", and the enrichment below would be asked to describe
+        # nothing. Seen for real when a model returned name "" for a chat
+        # capture — the note was saved anyway and had to be rebuilt by hand.
+        if note.item_type() != "pairing" and not slug_tokens(note.name):
+            logger.warning("capture %s produced no product name", capture_id)
+            logger.debug("capture %s raw model output: %s", capture_id, json.dumps(data))
+            raise CaptureFailed(
+                "couldn't tell which product this is — include its name in the "
+                "text (and the producer, if there is one) and try again"
+            )
+
         # The SYSTEM_PROMPT makes `common_notes` and `pairings_suggested`
         # mandatory on every item note — they are the whole reason the
         # web_search and query_notes tools are attached — and calls a note that
@@ -270,13 +292,33 @@ async def run_capture(
         # calls) had its hollow note written to the vault and reported as a
         # success. Check it here, still inside the try, so it surfaces through
         # the ModelOutputError path as a clean, retriable failure.
+        #
+        # A model that skips these fields once will usually skip them again on
+        # a retry, so rather than bounce the capture back to the user, one
+        # focused second call asks for ONLY the missing fields, with the
+        # schema requiring them. What that call cannot repair is a note still
+        # without `common_notes` — that one stays a hard failure, since the
+        # note would be hollow. A note with `common_notes` but no pairings is
+        # a real record and is saved as it is, for the regenerate-pairings
+        # maintenance job to fill in later.
         if note.item_type() != "pairing" and (missing := _missing_enrichment(note)):
-            logger.warning("capture %s missing enrichment: %s", capture_id, ", ".join(missing))
-            logger.debug("capture %s raw model output: %s", capture_id, json.dumps(data))
-            raise CaptureFailed(
-                f"the model skipped the enrichment step ({'; '.join(missing)}) — "
-                f"try the capture again"
+            logger.warning(
+                "capture %s missing enrichment: %s — asking for it separately",
+                capture_id, ", ".join(missing),
             )
+            note = await _fill_enrichment(
+                capture_id, settings, db, model=enrich_model, note=note, data=data, missing=missing,
+            )
+            if _NO_COMMON in (still_missing := _missing_enrichment(note)):
+                logger.warning(
+                    "capture %s still missing enrichment after retry: %s",
+                    capture_id, ", ".join(still_missing),
+                )
+                logger.debug("capture %s raw model output: %s", capture_id, json.dumps(data))
+                raise CaptureFailed(
+                    f"the model skipped the enrichment step ({'; '.join(still_missing)}) — "
+                    f"try the capture again"
+                )
     except ModelOutputError as e:  # CaptureFailed included — see its docstring
         logger.warning("capture %s failed: %s", capture_id, e)
         return CaptureResult(capture_id=capture_id, status="failed", error=str(e))
@@ -521,10 +563,142 @@ def _missing_enrichment(note: AnyNote) -> list[str]:
     """
     missing: list[str] = []
     if not (getattr(note, "common_notes", "") or "").strip():
-        missing.append("no common_notes")
+        missing.append(_NO_COMMON)
     if not getattr(note, "pairings_suggested", None):
-        missing.append("no pairings_suggested")
+        missing.append(_NO_PAIRINGS)
     return missing
+
+
+_NO_COMMON = "no common_notes"
+_NO_PAIRINGS = "no pairings_suggested"
+
+_ENRICHMENT_PROPERTIES = {
+    "common_notes": {
+        "type": "string",
+        "description": "The established tasting profile of this product, from the vendor, reviews or common knowledge (e.g. 'Oloroso sherry cask: dried fruit, walnut, orange peel'). One to three real sentences. Never the user's own opinion.",
+    },
+    "pairings": {
+        "type": "array",
+        "description": "1-2 cross-category pairing ideas for THIS item.",
+        "items": {
+            "type": "object",
+            "properties": {
+                "profile": {"type": "string", "description": "the ideal partner archetype, SPECIFIC ('a sherry-cask matured 10+ yo single malt'), never a generic category"},
+                "reason": {"type": "string", "description": "why it complements this item's character"},
+            },
+            "required": ["profile", "reason"],
+            "additionalProperties": False,
+        },
+    },
+    "cocktails": {
+        "type": "array",
+        "description": "CIGAR and PIPE only: 1-2 classical cocktails. Empty for every other item.",
+        "items": {
+            "type": "object",
+            "properties": {"name": {"type": "string"}, "reason": {"type": "string"}},
+            "required": ["name", "reason"],
+            "additionalProperties": False,
+        },
+    },
+}
+
+_ENRICHMENT_PROMPT = """\
+You complete one entry in a personal tasting log. You are given the item as \
+JSON and asked for the fields listed as required in the response schema — \
+nothing else, and every required field must be filled.
+
+`common_notes` (when required): the established tasting profile of this \
+specific product — what the vendor says, what reviewers commonly report, its \
+well-known character. Run a web_search for this exact product first and write \
+what you find as one to three real sentences. Fall back to your own knowledge \
+only if the search returned nothing about it. Never the user's own opinion.
+
+`pairings` (when required): 1-2 cross-category pairings. A pairing is ALWAYS \
+one COMPANION (cigar, pipe, chocolate) with one drink (whisky, coffee, beer, \
+rakı) — never same-side. Pair THIS item with the OPPOSITE side: a companion → \
+a drink, a drink → a companion. Each has a `profile` — the ideal partner \
+archetype in a SPECIFIC, tightly-specified style ("a sherry-cask matured 10+ yo \
+single malt", "a natural-process Ethiopian with berry acidity"), never a \
+generic category like "espresso" or "a bourbon" — and a short `reason` tied to \
+this item's character. Do NOT name particular bottles or products: the user's \
+own collection is matched to the profile afterwards. For a CIGAR or PIPE \
+tobacco only, also give 1-2 classical `cocktails` (Old Fashioned, Manhattan, \
+Negroni, Sazerac, …) with a `reason`; leave `cocktails` empty for everything \
+else.
+
+Respond only with the structured JSON.
+"""
+
+# Fields that describe the record's bookkeeping rather than its character.
+_ENRICHMENT_SKIP = frozenset({
+    "uid", "created", "updated", "notes", "pairings_suggested", "cocktail_pairings",
+    "price_sek", "stock", "source", "date", "status", "rating", "recommended_by",
+})
+
+
+async def _fill_enrichment(
+    capture_id: str,
+    settings: Settings,
+    db: CouchDBClient,
+    *,
+    model: str,
+    note: AnyNote,
+    data: dict[str, Any],
+    missing: list[str],
+) -> AnyNote:
+    """A second, narrow call for the mandatory fields the capture call skipped.
+
+    Asks ONLY for what is in `missing`, and marks those fields `required` in the
+    response schema — the capture schema leaves them optional, which is exactly
+    why a weak model drops them. Web search is attached only when `common_notes`
+    is wanted; pairings need no tools because the caller's
+    `ground_pairing_matches` chooses vault matches from the profiles afterwards.
+
+    Returns the note with whatever the call supplied, or the original note when
+    the call fails — this must never turn a working capture into an exception.
+    The caller decides whether what is still missing is fatal."""
+    need_common = _NO_COMMON in missing
+    need_pairings = _NO_PAIRINGS in missing
+    fields = (["common_notes"] if need_common else []) + (["pairings", "cocktails"] if need_pairings else [])
+    schema = {
+        "type": "object",
+        "properties": {k: _ENRICHMENT_PROPERTIES[k] for k in fields},
+        "required": [k for k in fields if k != "cocktails"],
+        "additionalProperties": False,
+    }
+    state = note.model_dump(mode="json", exclude=_ENRICHMENT_SKIP, exclude_none=True)
+    try:
+        provider = provider_for(model)
+        if provider is None:
+            return note
+        out = await provider.extract_structured(
+            settings, db,
+            job_id=f"{capture_id}#enrich",
+            model=model,
+            system_prompt=_ENRICHMENT_PROMPT,
+            text=json.dumps(state, ensure_ascii=False),
+            image_b64=None,
+            image_media_type=None,
+            use_web_search=need_common,
+            output_schema=schema,
+            site="capture",
+        )
+        merged = dict(data)
+        if need_common:
+            merged["common_notes"] = str(out.get("common_notes") or "")
+        if need_pairings:
+            merged["pairings_suggested"] = out.get("pairings") or []
+            if out.get("cocktails") and not data.get("cocktail_pairings"):
+                merged["cocktail_pairings"] = out["cocktails"]
+        filled = parse_any_note(merged)
+    except Exception as e:  # noqa: BLE001 — a bonus call must not fail the capture
+        logger.warning("capture %s enrichment retry failed: %s", capture_id, exc_label(e))
+        return note
+    logger.info(
+        "capture %s enrichment retry: common_notes=%s pairings=%d",
+        capture_id, bool((filled.common_notes or "").strip()), len(filled.pairings_suggested),
+    )
+    return filled
 
 
 def _validation_fields(exc: Exception) -> str:

@@ -81,6 +81,7 @@ async def process_job(job: dict, settings: Settings, db: CouchDBClient) -> dict:
             image_b64=payload["image_b64"],
             image_media_type=payload.get("image_media_type"),
             model_override=model_for(),
+            enrichment_model=overrides.get("text_model") or settings.models.claude.text_model,
         )
         return result.model_dump(mode="json")
 
@@ -88,6 +89,7 @@ async def process_job(job: dict, settings: Settings, db: CouchDBClient) -> dict:
         result = await run_capture(
             job["id"], settings, db, source="chat", text=payload["text"],
             model_override=model_for(),
+            enrichment_model=overrides.get("text_model") or settings.models.claude.text_model,
         )
         return result.model_dump(mode="json")
 

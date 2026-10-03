@@ -39,6 +39,7 @@ fails the job with an explicit message rather than a crash.
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import time
@@ -92,6 +93,13 @@ def get_openrouter_client(settings: Settings):
             default_headers={"X-Title": "Tasting Log"},
         )
     return _client
+
+
+# OpenRouter answers 200 immediately and then keeps the connection open while the
+# upstream model works, so the SDK's own read timeout (10 minutes) never fires on
+# a stalled upstream — and the worker handles one job at a time, so one stall
+# holds up every job behind it. Measured healthy calls: 15-45s.
+_REQUEST_TIMEOUT_S = 150.0
 
 
 def _query_notes_function_tool() -> dict[str, Any]:
@@ -190,14 +198,22 @@ async def _run_tool_loop(
 
     for _ in range(max_iterations):
         iterations += 1
-        response = await client.chat.completions.create(
-            model=model,
-            messages=messages,
-            tools=tools,
-            max_tokens=max_tokens,
-            extra_body=extra_body,
-            **kwargs,
-        )
+        try:
+            response = await asyncio.wait_for(
+                client.chat.completions.create(
+                    model=model,
+                    messages=messages,
+                    tools=tools,
+                    max_tokens=max_tokens,
+                    extra_body=extra_body,
+                    **kwargs,
+                ),
+                timeout=_REQUEST_TIMEOUT_S,
+            )
+        except asyncio.TimeoutError:
+            raise ModelOutputError(
+                f"{model} did not answer within {_REQUEST_TIMEOUT_S:.0f}s — try the request again"
+            ) from None
         if (call_usage := getattr(response, "usage", None)) is not None:
             call_in = getattr(call_usage, "prompt_tokens", 0) or 0
             call_out = getattr(call_usage, "completion_tokens", 0) or 0

@@ -198,6 +198,17 @@ class BaseNote(BaseModel):
             return None
         return v
 
+    @field_validator("country_of_origin", mode="before")
+    @classmethod
+    def _country_blank_is_unknown(cls, v):
+        # The edit form sends null for a blanked field and a model may emit it
+        # when it can't tell; either way the schema's own word for "couldn't be
+        # determined" is "unknown", not a validation error that blocks saving
+        # an unrelated edit (a rating, an ABV) on the same record.
+        if v is None or (isinstance(v, str) and not v.strip()):
+            return "unknown"
+        return v
+
     @field_validator("pairings_suggested", mode="before")
     @classmethod
     def _clean_pairings_suggested(cls, v):
@@ -276,6 +287,12 @@ class WhiskyNote(BaseNote):
     type: Literal["whisky"] = "whisky"
     category: str | None = None  # single malt | blend | bourbon | ...
     region: str | None = None
+    # The independent bottler (Gordon & MacPhail, Signatory, Cadenhead, Douglas
+    # Laing, …) when the bottle is NOT an official distillery release. Then
+    # `producer` stays the distillery and this names who selected and bottled
+    # the cask. Left unset for official bottlings — an absent key means "the
+    # distillery bottled it", not "unknown".
+    bottler: str | None = None
     peated: bool | None = None
     cask: str | None = None
     age_years: int | None = None
