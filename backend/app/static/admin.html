@@ -56,6 +56,18 @@
     details.group .tablewrap { border:0; border-top:1px solid var(--border); border-radius:0 0 10px 10px; }
     #empty { padding:16px; color:var(--dim); }
     #review { margin-bottom:12px; }
+    #chat { background:var(--surface); border:1px solid var(--border); border-radius:10px; margin-bottom:12px; }
+    #chat > summary { padding:10px 12px; cursor:pointer; font-weight:600; }
+    #chatlog { max-height:46vh; overflow-y:auto; padding:0 12px; }
+    .msg { margin:8px 0; padding:8px 10px; border-radius:10px; max-width:88%; white-space:pre-wrap; }
+    .msg.user { background:var(--accent); color:var(--accent-ink); margin-left:auto; }
+    .msg.assistant { background:var(--surface-2); }
+    .act { margin-top:8px; padding:8px; border:1px solid var(--border); border-radius:8px; background:var(--surface); white-space:normal; }
+    .act .dim { font-size:12px; }
+    #chatform { display:flex; gap:8px; padding:10px 12px; border-top:1px solid var(--border); }
+    #chatin { flex:1; resize:vertical; min-height:38px; }
+    .chips { display:flex; gap:6px; flex-wrap:wrap; padding:8px 12px 0; }
+    .chips button { font-size:12px; padding:3px 9px; border-radius:99px; }
     .rv-item { background:var(--surface); border:1px solid var(--border); border-radius:10px; padding:10px 12px; margin-bottom:8px; }
     .rv-head { display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin-bottom:6px; }
     .rv-p { display:grid; grid-template-columns:auto 1fr; gap:2px 10px; padding:6px 0; border-top:1px solid var(--border); }
@@ -70,6 +82,21 @@
 </head>
 <body>
   <h1>Data maintenance</h1>
+
+  <details id="chat" open>
+    <summary>Ask about your vault, or tell it what to fix</summary>
+    <div class="chips" id="chips">
+      <button type="button">Fetch all missing ABVs</button>
+      <button type="button">Is there a pattern in my favourite whiskies?</button>
+      <button type="button">Which items have no common notes?</button>
+      <button type="button">Re-match pairings for the cigars</button>
+    </div>
+    <div id="chatlog"></div>
+    <form id="chatform">
+      <textarea id="chatin" rows="1" placeholder="e.g. “fetch all missing ABVs” or “what do my best-rated whiskies have in common?”"></textarea>
+      <button id="chatsend" class="primary" type="submit">Send</button>
+    </form>
+  </details>
 
   <div class="bar">
     <input id="q" type="search" placeholder="Filter by name or producer…" />
@@ -310,21 +337,21 @@ $("match-all").onclick = () => ask("rematch", [], true);
 $("det-sel").onclick = () => ask("details", [...state.sel]);
 $("det-gaps").onclick = () => ask("details", [], true);
 $("confirm-no").onclick = () => { $("confirm").hidden = true; state.pending = null; };
+// Start a batch of jobs and follow them. Everything that launches work — the
+// buttons, and the actions the chat proposes — goes through here.
+async function startJobs(path, body) {
+  const r = await api(path, { method: "POST", body: JSON.stringify(body) });
+  state.jobs = r.jobs.map((j) => ({ ...j, status: "queued", done: false }));
+  state.rowJob = {};
+  if (path === "/api/details") { state.proposals = {}; renderReview(); }
+  for (const j of state.jobs) for (const d of j.doc_ids) state.rowJob[d] = { status: "queued" };
+  state.total = r.items; $("progwrap").hidden = false; render(); poll();
+}
 $("confirm-yes").onclick = async () => {
   const p = state.pending; $("confirm").hidden = true; if (!p) return;
   try {
-    if (p.mode === "details") {
-      const r = await api("/api/details", { method: "POST", body: JSON.stringify({ doc_ids: p.ids, overwrite: p.overwrite }) });
-      state.jobs = r.jobs.map((j) => ({ ...j, status: "queued", done: false }));
-      state.rowJob = {}; state.proposals = {}; renderReview();
-      for (const j of state.jobs) for (const d of j.doc_ids) state.rowJob[d] = { status: "queued" };
-      state.total = r.items; $("progwrap").hidden = false; render(); poll(); return;
-    }
-    const r = await api("/api/pairings", { method: "POST", body: JSON.stringify(p.all ? { all: true, mode: p.mode } : { doc_ids: p.ids, mode: p.mode }) });
-    state.jobs = r.jobs.map((j) => ({ ...j, status: "queued", done: false }));
-    state.rowJob = {};
-    for (const j of state.jobs) for (const d of j.doc_ids) state.rowJob[d] = { status: "queued" };
-    state.total = r.items; $("progwrap").hidden = false; render(); poll();
+    if (p.mode === "details") return await startJobs("/api/details", { doc_ids: p.ids, overwrite: p.overwrite });
+    await startJobs("/api/pairings", p.all ? { all: true, mode: p.mode } : { doc_ids: p.ids, mode: p.mode });
   } catch (e) { say(e.message, "bad"); }
 };
 
@@ -477,6 +504,84 @@ function openDrawer(id) {
 }
 function closeDrawer() { $("drawer").classList.remove("open"); $("drawer").setAttribute("aria-hidden", "true"); }
 document.addEventListener("keydown", (e) => { if (e.key === "Escape") closeDrawer(); });
+
+// ---- chat ----
+// A conversation held in the page. The server answers from the whole vault; when
+// a request means work (fetch details, pairings) the reply carries action cards,
+// and nothing starts until the card's button is pressed. Results then arrive the
+// usual way: details in the review panel, pairings written with undo.
+const chat = { messages: [], busy: false };
+
+function addMsg(role, text) {
+  const div = document.createElement("div");
+  div.className = `msg ${role}`;
+  div.textContent = text;
+  $("chatlog").appendChild(div);
+  $("chatlog").scrollTop = $("chatlog").scrollHeight;
+  return div;
+}
+
+function addAction(msgEl, a) {
+  const box = document.createElement("div");
+  box.className = "act";
+  const t = document.createElement("div");
+  t.innerHTML = `<b></b><div class="dim"></div>`;
+  t.querySelector("b").textContent = a.label;
+  t.querySelector(".dim").textContent = `${a.detail}${a.why ? " — " + a.why : ""}`;
+  const run = document.createElement("button");
+  run.className = "primary"; run.textContent = "Run"; run.style.marginTop = "6px";
+  run.onclick = async () => {
+    run.disabled = true;
+    try {
+      if (a.kind === "fetch_details") {
+        await startJobs("/api/details", { doc_ids: a.doc_ids, fields: a.fields, overwrite: a.overwrite });
+        run.textContent = "Started — proposals will appear above the list";
+      } else {
+        await startJobs("/api/pairings", { doc_ids: a.doc_ids, mode: a.mode });
+        run.textContent = "Started";
+      }
+    } catch (e) { run.textContent = "Failed"; say(e.message, "bad"); }
+  };
+  box.append(t, run);
+  msgEl.appendChild(box);
+}
+
+async function sendChat(text) {
+  if (chat.busy || !text.trim()) return;
+  chat.busy = true; $("chatsend").disabled = true;
+  chat.messages.push({ role: "user", content: text });
+  addMsg("user", text);
+  const wait = addMsg("assistant", "Thinking…");
+  try {
+    const { job_id } = await api("/api/chat", { method: "POST", body: JSON.stringify({ messages: chat.messages }) });
+    for (let n = 0; n < 200; n++) {
+      await new Promise((r) => setTimeout(r, 1500));
+      const { jobs } = await api("/api/jobs?ids=" + job_id);
+      const j = jobs[0];
+      if (j.status === "failed") throw new Error(j.error || "the assistant failed");
+      if (j.status === "done") {
+        wait.textContent = j.result.reply;
+        chat.messages.push({ role: "assistant", content: j.result.reply });
+        for (const a of j.result.actions) addAction(wait, a);
+        $("chatlog").scrollTop = $("chatlog").scrollHeight;
+        return;
+      }
+    }
+    throw new Error("no answer yet — try again");
+  } catch (e) {
+    wait.textContent = `Error: ${e.message}`;
+    chat.messages.pop();  // the failed turn shouldn't poison the next one
+  } finally { chat.busy = false; $("chatsend").disabled = false; }
+}
+$("chatform").addEventListener("submit", (e) => {
+  e.preventDefault();
+  const v = $("chatin").value; $("chatin").value = "";
+  sendChat(v);
+});
+$("chatin").addEventListener("keydown", (e) => {
+  if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); $("chatform").requestSubmit(); }
+});
+$("chips").addEventListener("click", (e) => { if (e.target.tagName === "BUTTON") sendChat(e.target.textContent); });
 
 // ---- boot ----
 load().then(loadHistory).catch((e) => say(e.message, "bad"));

@@ -15,6 +15,8 @@ minute-old snapshot, and nothing about it is exposed to the internet.
   POST /api/details        {doc_ids, fields?, overwrite?}  look up missing details
                            (one job per item; PROPOSALS only, nothing is written)
   POST /api/details/apply  {doc_id, fields}   write the proposals a person accepted
+  POST /api/chat           {messages}  one chat turn: a reply plus proposed actions
+                           (answered concurrently, not queued behind long jobs)
   GET  /api/jobs?ids=      progress of those jobs
   GET  /api/history        recent pairing changes, each with what it replaced
 
@@ -45,6 +47,7 @@ from pydantic import BaseModel
 
 from app.categories import categories_metadata
 from app.config import get_settings
+from app.chat_service import run_chat
 from app.couchdb_client import CouchDBClient
 from app import history
 from app.detail_fetch import FETCHABLE, apply_details, fetch_details
@@ -75,6 +78,10 @@ class DetailsBody(BaseModel):
     doc_ids: list[str]
     fields: list[str] | None = None
     overwrite: bool = False
+
+
+class ChatBody(BaseModel):
+    messages: list[dict[str, Any]]
 
 
 class ApplyBody(BaseModel):
@@ -214,6 +221,27 @@ def create_app() -> FastAPI:
             raise HTTPException(status_code=404 if "not found" in str(e) else 400, detail=str(e)) from e
         except Exception as e:  # noqa: BLE001 — the schema's reason is what the user needs
             raise HTTPException(status_code=422, detail=str(e)) from e
+
+    @app.post("/api/chat", status_code=202)
+    async def chat(body: ChatBody) -> dict:
+        job_id = str(uuid.uuid4())
+        jobs: Jobs = app.state.jobs
+        jobs.by_id[job_id] = {"kind": "chat", "status": "processing", "doc_ids": [], "result": None, "error": None}
+
+        async def go() -> None:
+            job = jobs.by_id[job_id]
+            try:
+                job.update(status="done", result=await run_chat(job_id, settings, db, messages=body.messages))
+            except Exception as e:  # noqa: BLE001 — shown in the chat, not swallowed
+                logger.exception("chat %s failed", job_id)
+                job.update(status="failed", error=str(e) or type(e).__name__)
+
+        # Held on app.state so the task isn't garbage-collected mid-flight.
+        app.state.chats = getattr(app.state, "chats", set())
+        task = asyncio.create_task(go())
+        app.state.chats.add(task)
+        task.add_done_callback(app.state.chats.discard)
+        return {"job_id": job_id}
 
     @app.get("/api/jobs")
     async def job_status(ids: str = Query(...)) -> dict:
