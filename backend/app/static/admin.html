@@ -111,6 +111,15 @@
     .badge.verified, .badge.ok { color:var(--ok); border-color:var(--ok); }
     .badge.unverified, .badge.doubtful, .badge.unchecked { color:var(--warn); border-color:var(--warn); }
     .badge.rejected, .badge.conflict { color:var(--danger); border-color:var(--danger); }
+    tr.chrow { cursor:pointer; } tr.chrow:hover { background:var(--surface-2); } tr.chrow.open { background:var(--surface-2); }
+    tr.chdetail td { white-space:normal; background:var(--surface-2); padding:10px 14px 14px; }
+    .diff { display:grid; grid-template-columns:150px 1fr 1fr; gap:6px 14px; font-size:13px; }
+    .diff .hd { font-size:11px; text-transform:uppercase; letter-spacing:.04em; color:var(--dim); }
+    .diff .old { color:var(--danger); text-decoration:line-through; text-decoration-color:rgba(192,57,43,.45); white-space:pre-wrap; }
+    .diff .new { color:var(--ok); white-space:pre-wrap; } .diff .none { color:var(--dim); font-style:italic; text-decoration:none; }
+    .diff2 { display:grid; grid-template-columns:1fr 1fr; gap:6px 18px; font-size:13px; }
+    .diff2 .col h4 { margin:0 0 6px; font-size:11px; text-transform:uppercase; letter-spacing:.04em; color:var(--dim); }
+    .diff2 .pair { background:var(--surface); }
     .norows { margin:4px 0 0 18px; padding:0; font-size:12px; } .norows li { margin:1px 0; }
     .val { font-weight:600; } .old { color:var(--dim); text-decoration:line-through; }
   </style>
@@ -119,6 +128,7 @@
   <header class="top"><h1>Tasting Log admin</h1><div id="status" class="dim"></div></header>
   <nav id="tabs">
     <button data-tab="data" class="on">Data</button>
+    <button data-tab="changes">Changes</button>
     <button data-tab="maintain">Maintain (AI)</button>
     <button data-tab="sync">Sync</button>
     <button data-tab="models">Models</button>
@@ -187,12 +197,20 @@
 
   <div id="groups"></div>
 
-  <details id="histbox">
-    <summary>Recent pairing changes (undo)</summary>
-    <div class="tablewrap" style="margin-top:8px"><table class="hist"><tbody id="hist"></tbody></table></div>
-    <p class="dim">The last 500 changes are kept.</p>
-  </details>
+  </section>
 
+  <section id="tab-changes" class="tabpanel" hidden>
+    <div class="bar">
+      <input id="ch-q" type="search" placeholder="Filter by item…" />
+      <select id="ch-kind"><option value="">All changes</option><option value="fields">Fetched details</option><option value="pairings">Pairings</option></select>
+      <button id="ch-refresh">Refresh</button>
+      <span id="ch-count" class="dim"></span>
+    </div>
+    <div class="tablewrap"><table>
+      <thead><tr><th>When</th><th>Item</th><th>Change</th><th>What</th><th></th></tr></thead>
+      <tbody id="hist"></tbody>
+    </table></div>
+    <p class="dim">Click a line to see the old and new values. Undo puts the old values back. The last 500 changes are kept; the new value was not recorded for pairing changes made before this tab existed, so those show the current value instead.</p>
   </section>
 
   <section id="tab-maintain" class="tabpanel" hidden>
@@ -562,23 +580,75 @@ function renderReview() {
 }
 
 // ---- history / undo ----
+// ---- Changes: what bulk operations replaced, with before/after and undo ----
+const KIND_LABEL = (h) => (h.kind === "fields" ? "Fetched details" : `Pairings (${h.mode === "rematch" ? "re-match" : "regenerated"})`);
+const isEmptyShow = (v) => v == null || v === "" || (Array.isArray(v) && !v.length);
+const shown2 = (v) => (isEmptyShow(v) ? `<span class="none">(empty)</span>` : esc(show(v)));
+
+function pairingsBlock(list) {
+  if (!list || !list.length) return `<span class="dim">none</span>`;
+  return list.map((p) => `<div class="pair"><b>${esc(p.profile)}</b><div class="dim">${esc(p.reason || "")}</div>
+    <div>${(p.matches || []).map((m) => `<span class="tag">${esc(m.name || m.item)}</span>`).join(" ") || '<span class="dim">no match</span>'}</div></div>`).join("");
+}
+
+function changeDetail(h) {
+  if (h.kind === "fields") {
+    const rows = Object.keys(h.previous).map((k) => `<div>${esc(k)}</div><div class="old">${shown2(h.previous[k])}</div><div class="new">${shown2(h.applied?.[k])}</div>`).join("");
+    return `<div class="diff"><div class="hd">Field</div><div class="hd">Before</div><div class="hd">After</div>${rows}</div>`;
+  }
+  // Pairings. Newer entries recorded what replaced the old pairings; older ones did
+  // not, so show the item's current value and say so.
+  const now = state.items.find((i) => i._id === h.doc_id);
+  const recorded = Boolean(h.applied);
+  const after = recorded ? h.applied : { pairings: now?.pairings_suggested || [], cocktails: now?.cocktail_pairings || [] };
+  const cocktails = (c) => (c && c.length ? `<div class="dim" style="margin-top:6px">cocktails: ${esc(c.map((x) => x.name).join(", "))}</div>` : "");
+  return `<div class="diff2">
+    <div class="col"><h4>Before</h4>${pairingsBlock(h.previous.pairings)}${cocktails(h.previous.cocktails)}</div>
+    <div class="col"><h4>${recorded ? "After" : "Now (this change did not record its result)"}</h4>${pairingsBlock(after.pairings)}${cocktails(after.cocktails)}</div></div>`;
+}
+
+function summarize(h) {
+  if (h.kind === "fields") return Object.keys(h.previous).join(", ");
+  const before = (h.previous.pairings || []).length, after = h.applied ? (h.applied.pairings || []).length : null;
+  return after == null ? `was ${before} pairing(s)` : `${before} → ${after} pairing(s)`;
+}
+
+function renderHistory() {
+  const q = $("ch-q").value.trim().toLowerCase(), kind = $("ch-kind").value;
+  const all = state.history || [];
+  const rows = all.map((h, n) => [h, n]).filter(([h]) => (!kind || (h.kind || "pairings") === kind) && (!q || (h.name || "").toLowerCase().includes(q)));
+  $("ch-count").textContent = `${rows.length} of ${all.length}`;
+  $("hist").innerHTML = rows.slice(0, 200).map(([h, n]) => `<tr class="chrow" data-n="${n}">
+      <td>${esc(new Date(h.at).toLocaleString())}</td><td>${esc(h.name)}</td><td class="dim">${esc(KIND_LABEL(h))}</td>
+      <td class="dim" style="white-space:normal">${esc(summarize(h))}</td>
+      <td><button class="undo" data-n="${n}">Undo</button></td></tr>`).join("") || `<tr><td colspan="5" class="dim">${all.length ? "Nothing matches." : "Nothing yet."}</td></tr>`;
+}
+
 async function loadHistory() {
   try {
     const { entries } = await api("/api/history");
-    $("hist").innerHTML = entries.slice(0, 60).map((h, n) => `<tr>
-      <td>${esc(new Date(h.at).toLocaleString())}</td><td>${esc(h.name)}</td><td class="dim">${esc(h.mode)}</td>
-      <td class="dim">${h.kind === "fields" ? "changed " + esc(Object.keys(h.previous).join(", ")) : `was ${h.previous.pairings.length} pairing(s)`}</td>
-      <td><button data-n="${n}">Undo</button></td></tr>`).join("") || `<tr><td class="dim">Nothing yet.</td></tr>`;
-    state.history = entries;
-  } catch (e) { /* history is a convenience */ }
+    state.history = entries.map((h) => ({ ...h, kind: h.kind || "pairings" }));
+    renderHistory();
+  } catch (e) { $("hist").innerHTML = `<tr><td colspan="5" class="bad">${esc(e.message)}</td></tr>`; }
 }
+["ch-q", "ch-kind"].forEach((id) => $(id).addEventListener("input", renderHistory));
+$("ch-refresh").onclick = loadHistory;
 $("hist").addEventListener("click", async (e) => {
-  const n = e.target.dataset?.n; if (n === undefined) return;
-  const h = state.history[n]; e.target.disabled = true;
-  try {
-    await saveRecord(h.doc_id, h.kind === "fields" ? h.previous : { pairings_suggested: h.previous.pairings, cocktail_pairings: h.previous.cocktails });
-    say(`Restored the previous ${h.kind === "fields" ? "values" : "pairings"} for ${h.name}.`, "good"); load();
-  } catch (err) { say(err.message, "bad"); e.target.disabled = false; }
+  const btn = e.target.closest("button.undo");
+  if (btn) {
+    const h = state.history[btn.dataset.n]; btn.disabled = true;
+    try {
+      await saveRecord(h.doc_id, h.kind === "fields" ? h.previous : { pairings_suggested: h.previous.pairings, cocktail_pairings: h.previous.cocktails });
+      say(`Restored the previous ${h.kind === "fields" ? "values" : "pairings"} for ${h.name}.`, "good"); btn.textContent = "Restored"; load();
+    } catch (err) { say(err.message, "bad"); btn.disabled = false; }
+    return;
+  }
+  // A click anywhere else on a line opens (or closes) its before/after.
+  const tr = e.target.closest("tr.chrow"); if (!tr) return;
+  const next = tr.nextElementSibling;
+  if (next && next.classList.contains("chdetail")) { next.remove(); tr.classList.remove("open"); return; }
+  tr.classList.add("open");
+  tr.insertAdjacentHTML("afterend", `<tr class="chdetail"><td colspan="5">${changeDetail(state.history[tr.dataset.n])}</td></tr>`);
 });
 
 // ---- edit drawer ----
@@ -817,7 +887,7 @@ async function portalJob(jobId, { onTick, timeoutMs = 900000 } = {}) {
 }
 
 // ---- tabs ----
-const TABS = ["data", "maintain", "sync", "models", "usage", "logs"];
+const TABS = ["data", "changes", "maintain", "sync", "models", "usage", "logs"];
 const loaded = new Set();
 function showTab(name) {
   if (!TABS.includes(name)) name = "data";
@@ -995,6 +1065,7 @@ $("lg-q").addEventListener("input", () => loadLogs().catch(() => {}));
 $("lg-refresh").onclick = () => loadLogs().catch((e) => ($("lg-count").textContent = e.message));
 
 const tabLoaders = {
+  changes: () => loadHistory(),
   models: () => loadModels().catch((e) => ($("md-roles").textContent = e.message)),
   usage: () => loadUsage().catch((e) => ($("us-status").textContent = e.message)),
   logs: () => loadLogs().catch((e) => ($("lg-count").textContent = e.message)),

@@ -429,7 +429,11 @@ async def run_repair_pairings_items(
             change.pop("cocktails", None)
         try:
             await _apply_one(db, {**change, "doc_id": t["_id"], "uid": t.get("uid")})
-            results.append({"doc_id": t["_id"], "name": name, "status": "applied", "previous": previous})
+            # Read back what was actually stored (the schema may have cleaned the
+            # change), so the Changes tab can show a true before/after.
+            saved = await db.get_document(t["_id"]) or {}
+            new = {"pairings": saved.get("pairings_suggested") or [], "cocktails": saved.get("cocktail_pairings") or []}
+            results.append({"doc_id": t["_id"], "name": name, "status": "applied", "previous": previous, "new": new})
         except Exception as e:  # noqa: BLE001 — one bad item must not sink the chunk
             results.append({"doc_id": t["_id"], "name": name, "status": "failed", "error": str(e)})
             logger.warning("repair items %s: failed doc_id=%s: %s", job_id, t["_id"], e)
@@ -437,6 +441,7 @@ async def run_repair_pairings_items(
         {
             "kind": "pairings", "job_id": job_id, "at": datetime.now(timezone.utc).isoformat(),
             "doc_id": r["doc_id"], "name": r.get("name"), "mode": mode, "previous": r["previous"],
+            "applied": r.get("new"),
         }
         for r in results if r.get("status") == "applied" and r.get("previous") is not None
     ])

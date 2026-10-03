@@ -605,6 +605,7 @@ that gets lost. Tabs:
 | Tab | What it does | Where it gets its data |
 |---|---|---|
 | Data | items grouped by type, data-quality filters, inline edit, regenerate / re-match pairings, Fetch details, chat over the vault, undo history | CouchDB directly |
+| Changes | what bulk operations replaced (fetched details, pairings), newest first; click a line for the old and new values, Undo restores the old | `admin/history.jsonl` (shared with the worker) |
 | Maintain (AI) | free-form bulk-edit plan → tick → apply | CouchDB directly; model = *reasoning* role |
 | Sync | records ↔ Obsidian vault check, rebuild vault, rebuild records, normalize | CouchDB directly |
 | Models | the three role choices, with what each currently resolves to | relay `/worker/admin/*` |
