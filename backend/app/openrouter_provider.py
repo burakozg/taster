@@ -100,6 +100,11 @@ def get_openrouter_client(settings: Settings):
 # a stalled upstream — and the worker handles one job at a time, so one stall
 # holds up every job behind it. Measured healthy calls: 15-45s.
 _REQUEST_TIMEOUT_S = 150.0
+# One size does not fit: a capture or a single field lookup answers in 15-45s, but a
+# pairing batch sends the whole inventory and researches up to 25 facts for 5 items
+# (config.yaml records such batches running for minutes), and chat reads the whole
+# vault. At 150s the first real pairing run failed every batch it started.
+_SITE_TIMEOUT_S = {"repair": 480.0, "manage": 480.0, "chat": 240.0}
 
 
 def _query_notes_function_tool() -> dict[str, Any]:
@@ -165,6 +170,7 @@ async def _run_tool_loop(
     output_schema: dict | None,
     max_iterations: int,
 ) -> str:
+    request_timeout = _SITE_TIMEOUT_S.get(site, _REQUEST_TIMEOUT_S)
     messages: list[dict[str, Any]] = [
         {"role": "system", "content": system_prompt},
         {"role": "user", "content": _user_content(text, image_b64, image_media_type)},
@@ -208,11 +214,11 @@ async def _run_tool_loop(
                     extra_body=extra_body,
                     **kwargs,
                 ),
-                timeout=_REQUEST_TIMEOUT_S,
+                timeout=request_timeout,
             )
         except asyncio.TimeoutError:
             raise ModelOutputError(
-                f"{model} did not answer within {_REQUEST_TIMEOUT_S:.0f}s — try the request again"
+                f"{model} did not answer within {request_timeout:.0f}s — try the request again"
             ) from None
         if (call_usage := getattr(response, "usage", None)) is not None:
             call_in = getattr(call_usage, "prompt_tokens", 0) or 0
