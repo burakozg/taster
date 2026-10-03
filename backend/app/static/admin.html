@@ -84,6 +84,21 @@
     .logrow td { white-space:normal; font-family:ui-monospace,Menlo,monospace; font-size:12px; }
     .lv-WARNING { color:var(--warn); } .lv-ERROR, .lv-CRITICAL { color:var(--danger); }
     #review { margin-bottom:12px; }
+    .bar.actions { padding:6px 0; border-top:1px solid var(--border); border-bottom:1px solid var(--border); }
+    label.check { display:inline-flex; align-items:center; gap:6px; cursor:pointer; user-select:none; }
+    .chip { background:var(--surface-2); border-radius:99px; padding:2px 10px; font-size:12px; color:var(--dim); }
+    .chip.on { background:var(--accent); color:var(--accent-ink); }
+    details.menu { position:relative; }
+    details.menu > summary.btn { list-style:none; cursor:pointer; background:var(--surface-2); border:1px solid var(--border); border-radius:8px; padding:6px 12px; user-select:none; }
+    details.menu > summary.btn::-webkit-details-marker { display:none; }
+    details.menu > summary.btn::after { content:" ▾"; color:var(--dim); }
+    details.menu[open] > summary.btn { border-color:var(--accent); }
+    details.menu .panel { position:absolute; right:0; top:calc(100% + 6px); z-index:6; min-width:260px; background:var(--surface); border:1px solid var(--border); border-radius:10px; box-shadow:0 10px 28px rgba(0,0,0,.28); padding:8px; display:flex; flex-direction:column; gap:4px; }
+    details.menu .panel button { text-align:left; background:none; border:0; padding:7px 10px; border-radius:6px; }
+    details.menu .panel button:hover:not(:disabled) { background:var(--surface-2); }
+    details.menu .panel .h { font-size:11px; text-transform:uppercase; letter-spacing:.05em; color:var(--dim); padding:6px 10px 0; }
+    details.menu .panel .note { font-size:12px; color:var(--dim); margin:6px 10px 2px; display:block; }
+    details.menu .panel p.note { margin:6px 10px 2px; }
     #statusbar { position:sticky; top:0; z-index:4; background:var(--bg); padding:2px 0; }
     #dwork { margin:10px 0; }
     #dwork .card { margin:0; }
@@ -170,19 +185,34 @@
     <button id="reload">Reload</button>
   </div>
 
-  <div class="bar">
-    <button id="selall">Select / clear shown</button>
-    <span id="selinfo" class="dim">0 selected</span>
-    <button id="regen-sel" disabled>Regenerate pairings (selected)</button>
-    <button id="match-sel" disabled>Re-match only (selected)</button>
+  <div class="bar actions">
+    <label class="check"><input type="checkbox" id="selall" /> Select shown</label>
+    <span id="selinfo" class="chip">0 selected</span>
     <span class="sp"></span>
-    <button id="regen-all">Regenerate all…</button>
-    <button id="match-all">Re-match all…</button>
-  </div>
-  <div class="bar">
-    <button id="det-sel" disabled>Fetch details (selected)</button>
-    <button id="det-gaps">Fetch details for all with gaps…</button>
-    <label class="dim"><input type="checkbox" id="det-over" /> also re-check filled fields</label>
+
+    <details class="menu" id="menu-pairings">
+      <summary class="btn">Pairings</summary>
+      <div class="panel">
+        <div class="h">Selected items</div>
+        <button id="regen-sel" disabled>Regenerate pairings</button>
+        <button id="match-sel" disabled>Re-match only</button>
+        <div class="h">Every item</div>
+        <button id="regen-all">Regenerate all…</button>
+        <button id="match-all">Re-match all…</button>
+        <p class="note"><b>Regenerate</b> rewrites the profiles with the research model. <b>Re-match</b> keeps them and only redoes the matching (no model calls).</p>
+      </div>
+    </details>
+
+    <details class="menu" id="menu-details">
+      <summary class="btn">Fetch details</summary>
+      <div class="panel">
+        <div class="h">Selected items</div>
+        <button id="det-sel" disabled>Fetch details</button>
+        <div class="h">Every item</div>
+        <button id="det-gaps">Fetch for all with gaps…</button>
+        <label class="note"><input type="checkbox" id="det-over" /> also re-check filled fields</label>
+      </div>
+    </details>
   </div>
   <div id="statusbar">
   <div id="confirm" class="bar" hidden>
@@ -401,8 +431,14 @@ function render() {
   }).join("");
   $("groups").innerHTML = html || `<div id="empty">${state.items.length ? "No items match." : "No items yet."}</div>`;
   const n = state.sel.size;
-  $("selinfo").textContent = `${n} selected`;
+  $("selinfo").textContent = n ? `${n} selected` : "none selected";
+  $("selinfo").classList.toggle("on", n > 0);
   $("regen-sel").disabled = $("match-sel").disabled = $("det-sel").disabled = !n;
+  // The menu lines say how many they will touch, so the scope is never a guess.
+  $("regen-sel").textContent = n ? `Regenerate pairings · ${n} selected` : "Regenerate pairings · none selected";
+  $("match-sel").textContent = n ? `Re-match only · ${n} selected` : "Re-match only · none selected";
+  $("det-sel").textContent = n ? `Fetch details · ${n} selected` : "Fetch details · none selected";
+  $("selall").checked = rows.length > 0 && rows.every((i) => state.sel.has(i._id));
 }
 
 // toggle doesn't bubble, so listen in the capture phase.
@@ -428,6 +464,9 @@ $("groups").addEventListener("click", (e) => {
   openDrawer(id);
 });
 // Select / clear everything currently shown, across groups.
+// A menu closes once something in it is chosen, or when the page is clicked elsewhere.
+document.querySelectorAll("details.menu").forEach((m) => m.addEventListener("click", (e) => { if (e.target.closest("button")) setTimeout(() => (m.open = false), 0); }));
+document.addEventListener("click", (e) => document.querySelectorAll("details.menu[open]").forEach((m) => { if (!m.contains(e.target)) m.open = false; }));
 $("selall").addEventListener("click", () => {
   const rows = shown(), every = rows.length > 0 && rows.every((i) => state.sel.has(i._id));
   for (const i of rows) every ? state.sel.delete(i._id) : state.sel.add(i._id);
