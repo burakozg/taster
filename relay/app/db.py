@@ -18,7 +18,7 @@ from typing import Any, Literal
 
 JobType = Literal[
     "capture_photo", "capture_chat", "lookup",
-    "manage_plan", "manage_apply", "repair_pairings_plan",
+    "manage_plan", "manage_apply", "repair_pairings_items", "fetch_details", "details_apply",
     "sync_status", "sync_rebuild_vault", "sync_rebuild_records", "sync_normalize",
     "record_update", "record_delete",
 ]
@@ -368,6 +368,19 @@ def list_recent_jobs(limit: int = 20) -> list[dict[str, Any]]:
             (limit,),
         ).fetchall()
     return [dict(r) for r in rows]
+
+
+def get_jobs(job_ids: list[str]) -> list[dict[str, Any]]:
+    """Several jobs by id, for progress polling. Payload is left out; the result
+    stays (it carries per-item outcomes or proposals)."""
+    if not job_ids:
+        return []
+    marks = ",".join("?" * len(job_ids))
+    with _lock:
+        rows = _conn.execute(
+            f"SELECT id, type, status, result, error FROM jobs WHERE id IN ({marks})", job_ids,
+        ).fetchall()
+    return [{**dict(r), "result": json.loads(r["result"]) if r["result"] else None} for r in rows]
 
 
 def job_counts() -> dict[str, int]:

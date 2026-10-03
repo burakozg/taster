@@ -27,17 +27,15 @@ not add a `ports:` mapping to it, or the login gate can be walked around.
 Pairing work is split into chunks of `repair_batch_size` items, run one chunk
 at a time, and each chunk is WRITTEN as soon as it finishes — a failure costs
 that chunk, not the run. Each applied item keeps the pairings it replaced
-(history.jsonl under ADMIN_DATA_DIR) so a change can be undone from the page.
+(app/history.py, shared with the worker) so a change can be undone from the page.
 """
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 import os
 import uuid
 from contextlib import asynccontextmanager
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Literal
 
@@ -48,7 +46,8 @@ from pydantic import BaseModel
 from app.categories import categories_metadata
 from app.config import get_settings
 from app.couchdb_client import CouchDBClient
-from app.detail_fetch import FETCHABLE, fetch_details
+from app import history
+from app.detail_fetch import FETCHABLE, apply_details, fetch_details
 from app.items_query import query_all_items
 from app.logging_setup import setup_logging
 from app.manage_service import run_repair_pairings_items
@@ -92,33 +91,6 @@ class Jobs:
         self.queue: asyncio.Queue[str] = asyncio.Queue()
 
 
-def _history_path() -> Path:
-    return Path(os.environ.get("ADMIN_DATA_DIR", "/data")) / "history.jsonl"
-
-
-def _append_history(entries: list[dict[str, Any]]) -> None:
-    if not entries:
-        return
-    path = _history_path()
-    try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        existing = path.read_text().splitlines() if path.exists() else []
-        lines = (existing + [json.dumps(e, ensure_ascii=False) for e in entries])[-HISTORY_KEEP:]
-        path.write_text("\n".join(lines) + "\n")
-    except OSError as e:
-        # Undo is a convenience; losing it must not fail a run that wrote fine.
-        logger.warning("could not write %s: %s", path, e)
-
-
-def _read_history() -> list[dict[str, Any]]:
-    path = _history_path()
-    try:
-        rows = [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
-    except (OSError, ValueError):
-        return []
-    return list(reversed(rows))
-
-
 async def _runner(app: FastAPI) -> None:
     """One worker task: pairing chunks run strictly one after another, so a
     big run can't hammer the model provider or fight itself over CouchDB."""
@@ -139,15 +111,6 @@ async def _runner(app: FastAPI) -> None:
                 job_id, settings, db, doc_ids=job["doc_ids"], mode=job["mode"],
             )
             job.update(status="done", result=result)
-            _append_history([
-                {
-                    "kind": "pairings",
-                    "job_id": job_id, "at": datetime.now(timezone.utc).isoformat(),
-                    "doc_id": r["doc_id"], "name": r.get("name"), "mode": result["mode"],
-                    "previous": r["previous"],
-                }
-                for r in result["results"] if r.get("status") == "applied" and r.get("previous") is not None
-            ])
         except Exception as e:  # noqa: BLE001 — a failed chunk must not stop the queue
             logger.exception("pairing job %s failed", job_id)
             job.update(status="failed", error=str(e) or type(e).__name__)
@@ -245,24 +208,12 @@ def create_app() -> FastAPI:
 
     @app.post("/api/details/apply")
     async def details_apply(body: ApplyBody) -> dict:
-        doc = await db.get_document(body.doc_id)
-        if doc is None:
-            raise HTTPException(status_code=404, detail="record not found")
-        allowed = set(FETCHABLE.get(doc.get("type", ""), ()))
-        bad = [k for k in body.fields if k not in allowed]
-        if bad or not body.fields:
-            raise HTTPException(status_code=400, detail=f"not a fetchable field: {', '.join(bad) or '(none given)'}")
-        previous = {k: doc.get(k) for k in body.fields}
         try:
-            await update_record(db, body.doc_id, body.fields)
+            return await apply_details(db, body.doc_id, body.fields)
+        except ValueError as e:
+            raise HTTPException(status_code=404 if "not found" in str(e) else 400, detail=str(e)) from e
         except Exception as e:  # noqa: BLE001 — the schema's reason is what the user needs
             raise HTTPException(status_code=422, detail=str(e)) from e
-        name = " — ".join(x for x in (doc.get("producer"), doc.get("name")) if x) or body.doc_id
-        _append_history([{
-            "kind": "fields", "at": datetime.now(timezone.utc).isoformat(), "doc_id": body.doc_id,
-            "name": name, "mode": "details", "previous": previous, "applied": body.fields,
-        }])
-        return {"ok": True, "applied": list(body.fields)}
 
     @app.get("/api/jobs")
     async def job_status(ids: str = Query(...)) -> dict:
@@ -277,8 +228,8 @@ def create_app() -> FastAPI:
         return {"jobs": found}
 
     @app.get("/api/history")
-    async def history() -> dict:
-        return {"entries": _read_history()}
+    async def history_entries() -> dict:
+        return {"entries": history.read()}
 
     return app
 

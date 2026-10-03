@@ -41,14 +41,6 @@ async def propose(body: ManageRequest) -> dict:
     return {"manage_id": job_id, "status": "pending"}
 
 
-@router.post("/repair-pairings", status_code=202)
-async def repair_pairings() -> dict:
-    """Enqueue a regenerate-pairings plan — fresh cross-category pairings for
-    every item note, reviewed and applied through the same /apply flow."""
-    job_id = create_job("repair_pairings_plan", {})
-    return {"manage_id": job_id, "status": "pending"}
-
-
 class ApplyRequest(BaseModel):
     changes: list[dict[str, Any]]
 

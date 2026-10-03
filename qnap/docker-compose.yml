@@ -183,6 +183,12 @@ services:
       - /share/Container/taster/.env
     environment:
       - TZ=Europe/Stockholm
+      - ADMIN_DATA_DIR=/data
+    volumes:
+      # The change history shared with taster-admin (app/history.py): pairings and
+      # fetched details applied from the phone app land in the same undo list as
+      # the ones applied from the web page. ./deploy creates and opens the directory.
+      - /share/Container/taster/admin:/data
     networks:
       # Bridge only — no qnet, no LAN IP. The worker accepts nothing
       # inbound and dials out via the bridge's NAT (Fly relay) and the

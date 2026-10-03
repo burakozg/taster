@@ -25,8 +25,10 @@ from __future__ import annotations
 import json
 import logging
 import uuid
+from datetime import datetime, timezone
 from typing import Any
 
+from app import history
 from app.categories import CATEGORIES, NOTE_TYPES
 from app.config import Settings
 from app.couchdb_client import CouchDBClient
@@ -427,61 +429,16 @@ async def run_repair_pairings_items(
         except Exception as e:  # noqa: BLE001 — one bad item must not sink the chunk
             results.append({"doc_id": t["_id"], "name": name, "status": "failed", "error": str(e)})
             logger.warning("repair items %s: failed doc_id=%s: %s", job_id, t["_id"], e)
+    history.append([
+        {
+            "kind": "pairings", "job_id": job_id, "at": datetime.now(timezone.utc).isoformat(),
+            "doc_id": r["doc_id"], "name": r.get("name"), "mode": mode, "previous": r["previous"],
+        }
+        for r in results if r.get("status") == "applied" and r.get("previous") is not None
+    ])
     applied = sum(r["status"] == "applied" for r in results)
     logger.info("repair items %s (%s): applied=%d failed=%d", job_id, mode, applied, len(results) - applied)
     return {"applied": applied, "failed": len(results) - applied, "mode": mode, "results": results}
-
-
-async def run_repair_pairings_plan(
-    manage_id: str,
-    settings: Settings,
-    db: CouchDBClient,
-    *,
-    model_override: str | None = None,
-) -> dict:
-    """Propose (do not apply) fresh cross-category pairings for every item note,
-    reusing the manage plan/approve/apply flow. The approved changes carry a
-    structured `pairings` list that _apply_one writes to `pairings_suggested`.
-
-    Chunked: one change per item means the output grows with the vault and would
-    eventually overflow max_tokens_manage in a single response. So items are
-    processed in batches of `repair_batch_size`, each batch a separate model call
-    whose output is bounded; every call still sees the FULL inventory so matches
-    can be drawn from the whole vault, not just the batch. Results are merged."""
-    claude_cfg = settings.models.claude
-    model = model_override or claude_cfg.text_model
-
-    records = await query_all_items(db)
-    items = [r for r in records if r.get("type") != "pairing"]
-    all_compact = _repair_compact(items)
-    compact_by_id = {r["_id"]: r for r in all_compact if r.get("_id")}
-
-    size = max(1, claude_cfg.repair_batch_size)
-    batches = [items[i:i + size] for i in range(0, len(items), size)]
-    all_changes: list[dict] = []
-    for n, batch in enumerate(batches, 1):
-        batch_changes = await _repair_batch(
-            settings, db, model, f"{manage_id}#b{n}", batch, all_compact, len(items),
-        )
-        # Ground each change's `matches` in Jev before the plan is returned
-        # for review — so what gets approved is already the typed decision,
-        # not the maintenance model's own guess quietly swapped out later at
-        # apply time. See pairing_match.py's module docstring.
-        await ground_repair_changes(db, settings, batch_changes, compact_by_id)
-        all_changes.extend(batch_changes)
-        logger.info(
-            "repair pairings %s: batch %d/%d -> %d change(s)",
-            manage_id, n, len(batches), len(batch_changes),
-        )
-
-    logger.info(
-        "repair pairings %s: %d item(s) proposed across %d batch(es)",
-        manage_id, len(all_changes), len(batches),
-    )
-    return {
-        "summary": f"Regenerated pairings for {len(all_changes)} item(s) in {len(batches)} batch(es).",
-        "changes": all_changes,
-    }
 
 
 async def run_manage_plan(

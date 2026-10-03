@@ -138,6 +138,20 @@ async function pollJob(path, statusEl, { onDone, workingMessage, timeoutMs = 120
   }
 }
 
+// Wait for one or more /data jobs. `onProgress(jobs)` sees every poll; resolves
+// with the final job list. Used by pairing regeneration and detail fetching —
+// the same jobs the admin web page runs.
+async function waitForJobs(ids, { onProgress, timeoutMs = 900000, intervalMs = 3000 }) {
+  const started = Date.now();
+  while (Date.now() - started < timeoutMs) {
+    await new Promise((r) => setTimeout(r, intervalMs));
+    const { jobs } = await apiFetch(`/data/jobs?ids=${ids.join(",")}`);
+    if (onProgress) onProgress(jobs);
+    if (jobs.length === ids.length && jobs.every((j) => j.status === "done" || j.status === "failed")) return jobs;
+  }
+  throw new Error("still running — check back later; finished work is already saved");
+}
+
 // A camera + upload picker pair sharing one preview and one file slot. The
 // user can take a photo OR pick a saved image (a screenshot of a message, a
 // web find); whichever they choose last is what gets submitted. Returns
@@ -928,29 +942,42 @@ function initManage() {
     }
   });
 
-  repairBtn.addEventListener("click", async () => {
-    repairBtn.disabled = true;
+  // Regenerate / re-match pairings: the same chunked jobs the admin web page
+  // runs (5 items each, written as each finishes). No review step — the replaced
+  // pairings are kept, and the admin page can undo them.
+  async function runPairings(mode, btn) {
+    const label = mode === "rematch" ? "Re-matching pairings" : "Regenerating pairings";
+    document.querySelectorAll("#manage-repair-pairings, #manage-rematch").forEach((b) => (b.disabled = true));
     planBox.classList.add("hidden");
     applyStatus.textContent = "";
-    statusEl.textContent = "Regenerating pairings...";
+    statusEl.textContent = `${label}...`;
     try {
-      const { manage_id } = await apiFetch("/manage/repair-pairings", { method: "POST" });
-      await pollJob(`/manage/${manage_id}`, statusEl, {
-        workingMessage: "Regenerating pairings...",
-        // Runs in batches across the whole vault, so allow generous headroom as
-        // the collection grows (the job keeps running server-side regardless).
-        timeoutMs: 600000,
-        onDone: (result) => {
-          statusEl.textContent = `Proposed pairings for ${(result.changes || []).length} item(s) — review below.`;
-          renderPlan(result);
+      const { jobs: queued, items } = await apiFetch("/data/pairings", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ all: true, mode }),
+      });
+      const jobs = await waitForJobs(queued.map((j) => j.job_id), {
+        onProgress: (js) => {
+          const done = js.filter((j) => j.status === "done" || j.status === "failed").length;
+          statusEl.textContent = `${label}... ${done}/${queued.length} batches`;
         },
       });
+      let applied = 0, failed = 0;
+      for (const j of jobs) {
+        if (j.status === "failed") failed += queued.find((q) => q.job_id === j.job_id).doc_ids.length;
+        else { applied += j.result.applied; failed += j.result.failed; }
+      }
+      statusEl.textContent = `${label}: ${applied} of ${items} item(s) updated${failed ? `, ${failed} failed` : ""}.`;
+      await reloadItems();
     } catch (e) {
       statusEl.textContent = `Error: ${e.message}`;
     } finally {
-      repairBtn.disabled = false;
+      document.querySelectorAll("#manage-repair-pairings, #manage-rematch").forEach((b) => (b.disabled = false));
     }
-  });
+  }
+  repairBtn.addEventListener("click", () => runPairings("regenerate", repairBtn));
+  document.getElementById("manage-rematch").addEventListener("click", () => runPairings("rematch"));
 
   applyBtn.addEventListener("click", async () => {
     const selected = [...changesEl.querySelectorAll("input[type=checkbox]:checked")]
@@ -1585,8 +1612,189 @@ function renderDetailRead(item) {
   delBtn.className = "rating-clear danger";
   delBtn.textContent = "Delete";
   delBtn.addEventListener("click", () => deleteItem(item));
-  actions.append(editBtn, delBtn);
+  actions.append(editBtn);
+  const fdBox = document.createElement("div");
+  if (isItem) {
+    const fdBtn = document.createElement("button");
+    fdBtn.className = "btn-secondary";
+    fdBtn.textContent = "Fetch details";
+    fdBtn.addEventListener("click", () => fetchDetails(item, fdBox, false));
+    actions.append(fdBtn);
+  }
+  actions.append(delBtn);
   box.appendChild(actions);
+  box.appendChild(fdBox);
+}
+
+// --- fetch details (worker per field, orchestrator on top) ---
+//
+// The same jobs the admin web page runs: one web-search lookup per EMPTY field,
+// each needing a source and a verbatim quote; the server checks the quote on
+// the page and a reviewer model flags wrong-edition or inconsistent proposals.
+// Nothing is saved until the proposals are accepted here.
+
+const FD_SHOW = (v) => (Array.isArray(v) ? v.join(", ") : v === true ? "yes" : v === false ? "no" : v ?? "");
+
+function fdHost(url) {
+  try { return new URL(url).hostname; } catch { return url || ""; }
+}
+
+async function fetchDetails(item, box, overwrite) {
+  box.innerHTML = "";
+  const status = document.createElement("div");
+  status.className = "status";
+  box.appendChild(status);
+  status.textContent = "Looking up details...";
+  try {
+    const { job_id } = await apiFetch("/data/details", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ doc_id: item._id, overwrite }),
+    });
+    const [job] = await waitForJobs([job_id], {
+      timeoutMs: 600000,
+      onProgress: (js) => { status.textContent = `Looking up details... (${js[0]?.status ?? "pending"})`; },
+    });
+    if (job.status === "failed") { status.textContent = `Failed: ${job.error ?? "unknown error"}`; return; }
+    renderProposals(item, box, job.result);
+  } catch (e) {
+    status.textContent = `Error: ${e.message}`;
+  }
+}
+
+function renderProposals(item, box, result) {
+  box.innerHTML = "";
+  const head = document.createElement("div");
+  head.className = "hint";
+  head.textContent = "Proposed details — ticked ones are verified against their source and approved by the reviewer. Nothing is saved until you apply.";
+  box.appendChild(head);
+  if (result.identity_ok === false) {
+    const w = document.createElement("div");
+    w.className = "status";
+    w.textContent = `Reviewer: the sources may not describe this exact product. ${result.identity_note || ""}`;
+    box.appendChild(w);
+  }
+  const usable = result.proposals.filter((p) => p.value != null && p.evidence !== "rejected" && p.evidence !== "unchanged");
+  const unusable = result.proposals.filter((p) => !usable.includes(p));
+  const list = document.createElement("ul");
+  list.className = "admin-list";
+  for (const p of usable) {
+    const li = document.createElement("li");
+    const cb = document.createElement("input");
+    cb.type = "checkbox";
+    cb.checked = Boolean(p.recommended);
+    cb.dataset.field = p.field;
+    const body = document.createElement("div");
+    const line = document.createElement("div");
+    const had = p.current != null && p.current !== "" && p.current !== "unknown" && !(Array.isArray(p.current) && !p.current.length);
+    line.textContent = `${labelFor(p.field)}: ${had ? FD_SHOW(p.current) + " → " : ""}${FD_SHOW(p.value)}`;
+    line.style.fontWeight = "600";
+    const meta = document.createElement("div");
+    meta.className = "hint";
+    meta.textContent = `${p.evidence}${p.verdict ? " · reviewer: " + p.verdict : ""}${p.reason ? " · " + p.reason : ""}`;
+    const quote = document.createElement("div");
+    quote.className = "hint";
+    quote.textContent = `“${p.quote}” — `;
+    const a = document.createElement("a");
+    a.href = p.source_url;
+    a.target = "_blank";
+    a.rel = "noopener noreferrer";
+    a.textContent = fdHost(p.source_url);
+    quote.appendChild(a);
+    body.append(line, meta, quote);
+    li.style.display = "flex";
+    li.style.gap = "0.6rem";
+    li.append(cb, body);
+    list.appendChild(li);
+  }
+  box.appendChild(list);
+  if (unusable.length) {
+    const rest = document.createElement("div");
+    rest.className = "hint";
+    rest.textContent = "No usable result: " + unusable.map((p) => `${labelFor(p.field)} (${p.reason || p.evidence})`).join("; ");
+    box.appendChild(rest);
+  }
+  if (!result.proposals.length) {
+    const none = document.createElement("div");
+    none.className = "hint";
+    none.textContent = "Nothing to look up — no gaps.";
+    box.appendChild(none);
+  }
+  const msg = document.createElement("div");
+  msg.className = "status";
+  const actions = document.createElement("div");
+  actions.className = "manage-actions";
+  if (usable.length) {
+    const apply = document.createElement("button");
+    apply.textContent = "Apply ticked";
+    apply.addEventListener("click", async () => {
+      const fields = {};
+      for (const cb of list.querySelectorAll("input:checked")) {
+        fields[cb.dataset.field] = usable.find((p) => p.field === cb.dataset.field).value;
+      }
+      if (!Object.keys(fields).length) { msg.textContent = "Tick at least one."; return; }
+      apply.disabled = true;
+      msg.textContent = "Saving...";
+      try {
+        const { job_id } = await apiFetch("/data/details/apply", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ doc_id: item._id, fields }),
+        });
+        const [job] = await waitForJobs([job_id], { timeoutMs: 120000, intervalMs: 2000 });
+        if (job.status === "failed") { msg.textContent = `Failed: ${job.error ?? "unknown error"}`; apply.disabled = false; return; }
+        Object.assign(item, fields);
+        await reloadItems();
+        showApplied(item, box, job.result.previous);
+      } catch (e) {
+        msg.textContent = `Error: ${e.message}`;
+        apply.disabled = false;
+      }
+    });
+    actions.appendChild(apply);
+  }
+  const close = document.createElement("button");
+  close.className = "btn-secondary";
+  close.textContent = "Dismiss";
+  close.addEventListener("click", () => { box.innerHTML = ""; });
+  actions.appendChild(close);
+  box.append(actions, msg);
+}
+
+// After an apply: confirm, and offer to put the old values back (the same
+// history the admin page undoes from).
+function showApplied(item, box, previous) {
+  box.innerHTML = "";
+  const msg = document.createElement("div");
+  msg.className = "status";
+  msg.textContent = `Saved ${Object.keys(previous).map(labelFor).join(", ")}.`;
+  const undo = document.createElement("button");
+  undo.className = "btn-secondary";
+  undo.textContent = "Undo";
+  undo.addEventListener("click", async () => {
+    undo.disabled = true;
+    try {
+      const { record_id } = await apiFetch("/record/update", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ doc_id: item._id, fields: previous }),
+      });
+      await pollJob(`/record/${record_id}`, msg, {
+        workingMessage: "Restoring...",
+        onDone: async () => { Object.assign(item, previous); await reloadItems(); renderDetailRead(item); },
+      });
+    } catch (e) {
+      msg.textContent = `Error: ${e.message}`;
+      undo.disabled = false;
+    }
+  });
+  const done = document.createElement("button");
+  done.textContent = "Done";
+  done.addEventListener("click", () => renderDetailRead(item));
+  const row = document.createElement("div");
+  row.className = "manage-actions";
+  row.append(done, undo);
+  box.append(msg, row);
 }
 
 function renderDetailEdit(item) {

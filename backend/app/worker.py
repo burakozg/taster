@@ -24,7 +24,8 @@ from app.errors import PhaseError, exc_label
 from app.items_query import query_all_items
 from app.logging_setup import secret_state, setup_logging
 from app.lookup_service import run_lookup
-from app.manage_service import run_manage_apply, run_manage_plan, run_repair_pairings_plan
+from app.detail_fetch import apply_details, fetch_details
+from app.manage_service import run_manage_apply, run_manage_plan, run_repair_pairings_items
 from app.reconcile import reconcile_vault_edits
 from app.record_service import delete_record, update_record
 from app.relay_client import RelayClient
@@ -119,13 +120,29 @@ async def process_job(job: dict, settings: Settings, db: CouchDBClient) -> dict:
             job["id"], settings, db, changes=payload["changes"],
         )
 
-    if job["type"] == "repair_pairings_plan":
-        # Dedicated maintenance: propose fresh cross-category pairings for every
-        # item (no re-capture). Applied via manage_apply, like any plan.
-        return await run_repair_pairings_plan(
+    # The three jobs below run the very same functions the admin page calls
+    # (taster-admin), so the phone app and the web page cannot drift apart.
+    if job["type"] == "repair_pairings_items":
+        # A few items' pairings, written as soon as they are done.
+        return await run_repair_pairings_items(
             job["id"], settings, db,
+            doc_ids=payload["doc_ids"],
+            mode=payload.get("mode", "regenerate"),
             model_override=model_for(),
         )
+
+    if job["type"] == "fetch_details":
+        # Proposals only — nothing is written until details_apply.
+        return await fetch_details(
+            job["id"], settings, db,
+            doc_id=payload["doc_id"],
+            fields=payload.get("fields"),
+            overwrite=bool(payload.get("overwrite")),
+            model_override=model_for(),
+        )
+
+    if job["type"] == "details_apply":
+        return await apply_details(db, payload["doc_id"], payload["fields"])
 
     if job["type"] == "sync_status":
         return await sync_status(db)

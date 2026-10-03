@@ -171,9 +171,13 @@
         <div class="manage-actions">
           <button id="manage-propose">Propose changes</button>
           <button id="manage-repair-pairings" class="btn-secondary" type="button">Regenerate pairings</button>
+          <button id="manage-rematch" class="btn-secondary" type="button">Re-match only</button>
         </div>
-        <p class="hint">Regenerate rebuilds every item's pairing suggestions under the
-          current companion↔drink rule (profile + owned matches) — no re-capture needed.</p>
+        <p class="hint">Regenerate rebuilds every item's pairing suggestions (profile +
+          owned matches); Re-match keeps the profiles and only redoes the matching. They
+          run in small batches and save as they go; the previous pairings are kept and
+          can be undone from the data page. Missing details are fetched per item from its
+          detail view.</p>
         <div id="manage-status" class="status"></div>
         <div id="manage-plan" class="hidden">
           <div id="manage-summary" class="manage-summary"></div>

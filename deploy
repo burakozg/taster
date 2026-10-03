@@ -78,8 +78,8 @@ ship_couchdb_config() {
   COUCHDB_CONFIG_SHIPPED=true
 }
 
-# taster-admin keeps its undo history in ${NAS_APP_DIR}/admin, mounted into a
-# read-only container that runs as uid 1000. Docker would otherwise create the
+# The change history (undo) lives in ${NAS_APP_DIR}/admin, mounted into both
+# taster-admin and the worker — read-only containers running as uid 1000. Docker would otherwise create the
 # directory root-owned the first time, and the history writes would fail
 # quietly (undo is optional, so nothing else would notice).
 ship_admin_dir() {

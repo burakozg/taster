@@ -636,6 +636,25 @@ http:
 hostname without a session and expects the login redirect — a 200 would mean the
 gate is missing.
 
+### One set of methods, two front ends
+
+The maintenance operations — regenerate / re-match pairings
+(`manage_service.run_repair_pairings_items`), fetch details
+(`detail_fetch.fetch_details`) and apply accepted details
+(`detail_fetch.apply_details`) — are single functions. Two thin transports call
+them, so the phone app and the web page cannot drift apart:
+
+| front end | path to the functions |
+|---|---|
+| phone app | Fly relay `/data/*` → job queue → worker job types `repair_pairings_items`, `fetch_details`, `details_apply` |
+| admin page | `taster-admin` calls them directly (its own small in-memory queue) |
+
+Both write to one change history (`app/history.py`, `admin/history.jsonl`,
+mounted into the worker and taster-admin), so a change made from either can be
+undone from the admin page. The app offers an immediate Undo after applying
+details. Pairing work is chunked (`repair_batch_size` items per job) and each
+chunk is written as it finishes; there is no whole-vault plan job any more.
+
 ### Fetch details (worker per field, orchestrator on top)
 
 `backend/app/detail_fetch.py`, behind the "Fetch details" buttons. One item is
@@ -649,6 +668,7 @@ Finally one model call reviews the whole set for the same product/edition and
 for consistency with the record; it can flag a proposal, never change or
 un-reject one. **Nothing is written by the job** — the page shows each proposal
 with its evidence and verdicts, pre-ticks only those that are verified *and*
-approved *and* fill an empty field, and `POST /api/details/apply` writes the
-ticked ones, keeping the old values in `history.jsonl` for undo. Personal fields
+approved *and* fill an empty field, and `apply_details` writes the
+ticked ones (from the app via the `details_apply` job, from the page via
+`POST /api/details/apply`), keeping the old values in the shared history for undo. Personal fields
 (rating, notes, stock, price, brew settings) are not fetchable.

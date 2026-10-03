@@ -30,6 +30,7 @@ import json
 import logging
 import re
 import socket
+from datetime import datetime, timezone
 from typing import Any
 from urllib.parse import urljoin, urlparse
 
@@ -40,6 +41,8 @@ from app.couchdb_client import CouchDBClient
 from app.model_output import ModelOutputError
 from app.providers import provider_for
 from app.schema import parse_any_note
+from app import history
+from app.record_service import update_record
 from app.sync_service import _fold_legacy
 
 logger = logging.getLogger("worker.details")
@@ -444,3 +447,28 @@ async def fetch_details(
     logger.info("details %s: %s — %d proposal(s), %d recommended",
                 job_id, doc_id, len(proposals), sum(p["recommended"] for p in proposals))
     return result
+
+
+async def apply_details(db: CouchDBClient, doc_id: str, fields: dict[str, Any]) -> dict[str, Any]:
+    """Write the proposals a person accepted, and keep what they replaced.
+
+    The ONE way fetched details reach a record, whichever front end — the phone
+    app (through a worker job) or the admin page — accepted them. Only lookup-able
+    fields are allowed: this is not a back door to rating, notes or stock.
+    Raises ValueError for a missing record or a disallowed field; a value the
+    note schema rejects raises whatever `update_record` raises."""
+    doc = await db.get_document(doc_id)
+    if doc is None:
+        raise ValueError(f"record not found: {doc_id}")
+    allowed = set(fetchable_fields(doc.get("type", "")))
+    bad = [k for k in fields if k not in allowed]
+    if bad or not fields:
+        raise ValueError(f"not a fetchable field: {', '.join(bad) or '(none given)'}")
+    previous = {k: doc.get(k) for k in fields}
+    await update_record(db, doc_id, fields)
+    name = " — ".join(x for x in (doc.get("producer"), doc.get("name")) if x) or doc_id
+    history.append([{
+        "kind": "fields", "at": datetime.now(timezone.utc).isoformat(), "doc_id": doc_id,
+        "name": name, "mode": "details", "previous": previous, "applied": fields,
+    }])
+    return {"ok": True, "doc_id": doc_id, "applied": list(fields), "previous": previous}

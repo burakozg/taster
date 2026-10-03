@@ -3,7 +3,7 @@
 Two places propose pairing matches, and both share the same shape of problem:
 capture_service.py's SYSTEM_PROMPT asks the capture model to call
 `query_notes` and pick 0-2 `matches`, and manage_service.py's
-run_repair_pairings_plan asks the same of a maintenance model regenerating
+run_repair_pairings_items asks the same of a maintenance model regenerating
 pairings for the whole vault. In both cases the pick is made inside the same
 free-text completion that also writes the creative `profile`/`reason`, with
 no confidence signal and nothing stopping a plausible-sounding but wrong
