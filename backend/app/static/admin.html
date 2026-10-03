@@ -330,6 +330,7 @@ async function load() {
   state.items = it.items.filter((i) => i.type !== "pairing");
   state.cats = cat.categories || [];
   state.fetchable = cat.fetchable || {};
+  state.batch = cat.repair_batch_size || 5;
   const sel = $("type");
   if (sel.options.length === 1) for (const c of state.cats.filter((c) => c.is_item)) sel.add(new Option(c.label, c.type));
   state.sel = new Set([...state.sel].filter((id) => state.items.some((i) => i._id === id)));
@@ -453,7 +454,7 @@ function ask(mode, ids, all) {
   }
   const n = all ? state.items.length : ids.length;
   const what = mode === "rematch" ? "Re-match" : "Regenerate pairings for";
-  const cost = mode === "rematch" ? "no model calls, only the matching step" : `about ${Math.ceil(n / 5)} model calls (5 items each)`;
+  const cost = mode === "rematch" ? "no model calls, only the matching step" : `about ${Math.ceil(n / (state.batch || 5))} model calls (${state.batch || 5} items each)`;
   state.pending = { mode, ids, all };
   $("confirm-text").textContent = `${what} ${n} item${n === 1 ? "" : "s"} — ${cost}. Previous pairings are kept for undo.`;
   $("confirm").hidden = false;

@@ -228,7 +228,12 @@ def create_app() -> FastAPI:
     @app.get("/api/categories")
     async def categories() -> dict:
         # `fetchable`: which fields "Fetch details" can look up, per type.
-        return {"categories": categories_metadata(), "fetchable": {t: list(f) for t, f in FETCHABLE.items()}}
+        return {
+            "categories": categories_metadata(),
+            "fetchable": {t: list(f) for t, f in FETCHABLE.items()},
+            # Items per pairing call, so the page's "N model calls" estimate matches.
+            "repair_batch_size": settings.models.claude.repair_batch_size,
+        }
 
     @app.post("/api/record/update")
     async def record_update(body: UpdateBody) -> dict:

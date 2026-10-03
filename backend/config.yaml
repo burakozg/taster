@@ -69,6 +69,19 @@ claude:
   max_tokens_capture: 16384
   max_tokens_lookup: 4096
 
+  # Pairing regeneration (and AI Maintain plans) write a lot of JSON per call AND
+  # spend reasoning tokens from the same budget first. At 16384 a batch of 5 items
+  # ran out mid-answer ("output was truncated") on the first real full run. A ceiling,
+  # not a spend: you pay only for tokens produced. DeepSeek V4 Pro allows 384K output
+  # tokens; if you pick a model with a smaller cap, lower this to fit it.
+  max_tokens_manage: 32768
+
+  # Items per pairing call. Fewer per call = each call's output stays well inside the
+  # ceiling above, and a failure costs less (every batch is saved as it finishes).
+  # The price is more calls and more total time. Was 10, then 5; the portal and the
+  # chat read this, so their "N model calls" estimates follow it.
+  repair_batch_size: 3
+
   # Effort level: low | medium | high | xhigh | max. Capture and lookup are
   # both narrow, well-specified extraction/QA tasks — "medium" is a sane
   # default; raise to "high" if you see the model under-thinking on tricky

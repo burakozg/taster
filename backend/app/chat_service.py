@@ -40,7 +40,6 @@ logger = logging.getLogger("worker.chat")
 
 MAX_TURNS = 12          # earlier turns are dropped, not summarised
 MAX_MESSAGE_CHARS = 4000
-_PAIR_CHUNK = 5         # items per pairing job — the repair_batch_size default
 
 ACTION_KINDS = ("fetch_details", "regenerate_pairings", "rematch_pairings")
 
@@ -181,7 +180,7 @@ def build_gaps(items: list[dict[str, Any]]) -> dict[str, Any]:
     return gaps
 
 
-def _resolve(action: dict[str, Any], items: list[dict[str, Any]]) -> dict[str, Any] | None:
+def _resolve(action: dict[str, Any], items: list[dict[str, Any]], batch_size: int) -> dict[str, Any] | None:
     """Turn the model's loose selector into the exact items and cost, or None if
     it selects nothing."""
     kind = action.get("kind")
@@ -220,7 +219,7 @@ def _resolve(action: dict[str, Any], items: list[dict[str, Any]]) -> dict[str, A
     if not ids:
         return None
     mode = "rematch" if kind == "rematch_pairings" else "regenerate"
-    calls = 0 if mode == "rematch" else math.ceil(len(ids) / _PAIR_CHUNK)
+    calls = 0 if mode == "rematch" else math.ceil(len(ids) / max(1, batch_size))
     return {"kind": kind, "doc_ids": ids, "mode": mode, "items": len(ids), "lookups": calls,
             "label": f"{'Re-match' if mode == 'rematch' else 'Regenerate'} pairings for {len(ids)} item(s)",
             "detail": ("no model calls, only the matching step" if mode == "rematch" else f"about {calls} model call(s)")
@@ -275,7 +274,7 @@ async def run_chat(
         raise ModelOutputError("the model returned no reply")
     actions, dropped = [], 0
     for a in out.get("actions") or []:
-        resolved = _resolve(a, items)
+        resolved = _resolve(a, items, settings.models.claude.repair_batch_size)
         if resolved is None:
             dropped += 1
             continue
