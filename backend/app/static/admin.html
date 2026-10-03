@@ -167,16 +167,18 @@ async function load() {
 function shown() {
   const q = $("q").value.trim().toLowerCase(), t = $("type").value, is = $("issue").value;
   const { k, dir } = state.sort;
-  const val = (i) => (["common", "pairings", "matches"].includes(k) ? facts(i)[k] : k === "rating" ? (i.rating ?? -1) : k === "name" ? title(i).toLowerCase() : (i[k] ?? ""));
+  const val = (i) => (["common", "pairings", "matches"].includes(k) ? facts(i)[k] : k === "rating" ? (i.rating ?? -1) : k === "producer" ? (i.producer || "").toLowerCase() : k === "name" ? (i.name || "").toLowerCase() : (i[k] ?? ""));
   return state.items
     .filter((i) => (!t || i.type === t)
       && (!q || title(i).toLowerCase().includes(q))
       && (!is || (is === "any" ? issues(i).length : issues(i).includes(is))))
-    .sort((a, b) => (val(a) > val(b) ? 1 : val(a) < val(b) ? -1 : 0) * dir);
+    .sort((a, b) => (val(a) > val(b) ? 1 : val(a) < val(b) ? -1 : 0) * dir
+      // ties (same producer, same rating…) fall back to the name, A→Z
+      || String(a.name || "").localeCompare(String(b.name || "")));
 }
 
 const ICONS = { cigar: "🚬", whisky: "🥃", coffee: "☕", beer: "🍺", pipe: "🌿", chocolate: "🍫", raki: "🍶" };
-const COLS = [["name", "Name"], ["rating", "★"], ["status", "Status"], ["country_of_origin", "Country"],
+const COLS = [["producer", "Producer"], ["name", "Name"], ["rating", "★"], ["status", "Status"], ["country_of_origin", "Country"],
   ["common", "Common notes"], ["pairings", "Pairings"], ["matches", "Matched"]];
 // Groups the user has opened, kept across re-renders (every tick of a checkbox
 // redraws the list). Like the Search tab they start collapsed.
@@ -187,7 +189,8 @@ function rowHtml(i) {
   const noCountry = !i.country_of_origin || i.country_of_origin === "unknown";
   return `<tr class="row" data-id="${esc(i._id)}">
     <td><input type="checkbox" class="pick" ${state.sel.has(i._id) ? "checked" : ""} /></td>
-    <td class="name">${i.producer ? `<span class="dim">${esc(i.producer)} —</span> ` : ""}${esc(i.name)}</td>
+    <td class="name">${esc(i.producer || "")}</td>
+    <td class="name">${esc(i.name)}</td>
     <td>${i.rating ?? ""}</td><td>${esc(i.status || "")}</td>
     <td class="${noCountry ? "warnc" : ""}">${esc(i.country_of_origin || "")}</td>
     <td class="${f.common ? "good" : "bad"}">${f.common ? "✓" : "missing"}</td>
